@@ -35,9 +35,11 @@ ekit-istio           Istio Proxyless                                    （零�
       ekit-nns       服务治理客户端                           → httpx, registry, core, logx, tracing, metrics
         ekit-bootstrap 应用引导
     ekit-middleware  Hertz 中间件栈                           → core, concurrency, logx, metrics, tracing, registry
-    ekit-hertz       Hertz 运行时/适配/instrumentation        → middleware, gorm, nns, registry, metrics, tracing, logx, core
-    ekit-kitex       Kitex 生态                               → nns, registry, core, concurrency, logx, metrics
+    ekit-handler     HTTP handler 层（CRUD/绑定/版本）        → middleware, gorm, core, tracing
+    ekit-hertz       Hertz 运行时/适配/instrumentation        → nns, registry, metrics, tracing, logx, core, concurrency
+    ekit-kitex       Kitex 生态                               → nns, registry, core, concurrency, logx, metrics, tracing
   ekit-workflow      流程编排                                 → concurrency, logx
+ekit-kitex-examples  Kitex 示例（echo client/server）         → kitex, bootstrap, registry, logx, tracing
 ```
 
 > 注：`ekit-observability` 已在 Round-2 深拆中解散——logx 迁 [ekit-logx]、metrics 迁 [ekit-metrics]、
