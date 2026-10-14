@@ -15,8 +15,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/sony/gobreaker"
-	"github.com/yi-nology/ekit-tracing/traceid"
 	"github.com/yi-nology/ekit-registry/registry"
+	"github.com/yi-nology/ekit-tracing/traceid"
 )
 
 type requestSnapshot struct {
