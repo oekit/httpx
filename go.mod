@@ -9,8 +9,8 @@ require (
 	github.com/yi-nology/ekit-concurrency v0.1.0
 	github.com/yi-nology/ekit-logx v0.1.1
 	github.com/yi-nology/ekit-metrics v0.1.0
-	github.com/yi-nology/ekit-registry v0.2.1
-	github.com/yi-nology/ekit-tracing v0.1.1
+	github.com/yi-nology/ekit-registry v0.2.0
+	github.com/yi-nology/ekit-tracing v0.1.0
 	go.opentelemetry.io/otel v1.46.0
 	go.opentelemetry.io/otel/sdk v1.46.0
 	go.opentelemetry.io/otel/trace v1.46.0
