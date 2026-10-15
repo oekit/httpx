@@ -3,6 +3,7 @@
 > HTTP 客户端 + 负载均衡——Hertz Client 高层封装：服务发现/熔断/重试/指标/OTel 透传/实例权重贯通。
 
 > 项目主页：**https://oekit.github.io/** · 名称由来：**O**pen **E**asy **Kit**（开源 · 易用 · 工具集合）
+> 🤖 AI Agent：本仓规范与硬规则见 [AGENTS.md](AGENTS.md)；机器可读索引见 [llms.txt](https://oekit.github.io/llms.txt)（接口签名以源码为准）。
 
 本仓库是 [ekit](https://git.enjoye.top/enjoydream/ekit)（`git.enjoye.top/enjoydream/ekit` v0.34.0）
 拆分出的独立 Go module，属于 **oekit** oekit（Open Easy Kit）模块矩阵。
@@ -11,6 +12,16 @@
 
 ```bash
 go get github.com/oekit/httpx@v0.1.4
+```
+
+## 快速使用
+
+```go
+import "github.com/oekit/httpx/httpx"
+
+c := httpx.NewClient("payment-svc") // NNS 发现 + 熔断 + 重试 + 指标
+var out Result
+err := c.GetJSON(ctx, "/api/v1/pay", &out)
 ```
 
 ## 包清单
