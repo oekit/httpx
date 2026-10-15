@@ -6,11 +6,11 @@ require (
 	github.com/cloudwego/hertz v0.10.6
 	github.com/prometheus/client_golang v1.24.1
 	github.com/sony/gobreaker v1.0.0
-	github.com/yi-nology/ekit-concurrency v0.1.0
-	github.com/yi-nology/ekit-logx v0.1.1
-	github.com/yi-nology/ekit-metrics v0.1.1
+	github.com/yi-nology/ekit-concurrency v0.1.1
+	github.com/yi-nology/ekit-logx v0.1.4
+	github.com/yi-nology/ekit-metrics v0.1.2
 	github.com/yi-nology/ekit-registry v0.2.2
-	github.com/yi-nology/ekit-tracing v0.1.1
+	github.com/yi-nology/ekit-tracing v0.1.2
 	go.opentelemetry.io/otel v1.46.0
 	go.opentelemetry.io/otel/sdk v1.46.0
 	go.opentelemetry.io/otel/trace v1.46.0
