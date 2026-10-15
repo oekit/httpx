@@ -14,16 +14,30 @@
 go get github.com/oekit/httpx@v0.1.4
 ```
 
-## 快速使用
+## 能做什么
 
+- **服务发现**：NNS 无缝接入，实例权重真实生效
+- **熔断 + 重试**：gobreaker per-service、指数退避+抖动、5xx/网络错误才重试
+- **弹性指标**：熔断状态/重试计数自动上报
+- **OTel 透传**：一行注入 trace 头
+- **负载均衡**：RoundRobin/Random/Weighted/Hash 可插拔
+
+## 使用示例
+
+### JSON 客户端
 ```go
 import "github.com/oekit/httpx/httpx"
 
-c := httpx.NewClient("payment-svc") // NNS 发现 + 熔断 + 重试 + 指标
-var out Result
-err := c.GetJSON(ctx, "/api/v1/pay", &out)
+c := httpx.NewClient("payment-svc") // 服务名走服务发现
+var out PayResp
+err := c.GetJSON(ctx, "/api/v1/pay?id=1", &out)
+err = c.PostJSON(ctx, "/api/v1/refund", body, &out)
 ```
-
+### 文件上传 / 原始字节
+```go
+err := c.UploadFile(ctx, "/upload", "/tmp/a.png", "file", nil, &out)
+raw, err := c.DoRaw(ctx, "PUT", "/api/v1/raw", payload)
+```
 ## 包清单
 
 - \`httpx/\` — NewClient + WithNNS/WithCircuitBreaker/WithRetryConfig(指数退避+抖动)/WithMetrics/WithTracePropagation
