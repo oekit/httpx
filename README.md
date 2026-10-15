@@ -11,7 +11,7 @@
 ## 安装
 
 ```bash
-go get github.com/oekit/httpx@v0.1.4
+go get github.com/oekit/httpx@v0.1.5
 ```
 
 ## 能做什么
