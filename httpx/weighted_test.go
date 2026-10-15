@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/yi-nology/ekit-httpx/loadbalance"
-	"github.com/yi-nology/ekit-registry/registry"
+	"github.com/oekit/httpx/loadbalance"
+	"github.com/oekit/registry/registry"
 )
 
 // TestWeightedResolver_EndpointManagerWeightPropagation 钉住权重贯通语义：

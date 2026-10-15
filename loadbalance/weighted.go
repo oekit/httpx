@@ -3,7 +3,7 @@ package loadbalance
 import (
 	"math/rand"
 
-	"github.com/yi-nology/ekit-registry/registry"
+	"github.com/oekit/registry/registry"
 )
 
 // weightedPick 根据实例权重随机选择一个实例的索引（加权随机算法）。

@@ -6,7 +6,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/app/client"
 	"github.com/cloudwego/hertz/pkg/common/config"
 	"github.com/cloudwego/hertz/pkg/protocol"
-	"github.com/yi-nology/ekit-metrics/resilience"
+	"github.com/oekit/metrics/resilience"
 	"sync/atomic"
 	"time"
 )

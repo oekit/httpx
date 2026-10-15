@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yi-nology/ekit-concurrency/async"
-	"github.com/yi-nology/ekit-httpx/loadbalance"
-	"github.com/yi-nology/ekit-logx"
-	"github.com/yi-nology/ekit-registry/registry"
+	"github.com/oekit/concurrency/async"
+	"github.com/oekit/httpx/loadbalance"
+	"github.com/oekit/logx"
+	"github.com/oekit/registry/registry"
 )
 
 var httpLog = logx.Delegating("httpx")

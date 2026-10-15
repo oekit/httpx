@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/oekit/metrics/resilience"
 	prom "github.com/prometheus/client_golang/prometheus"
-	"github.com/yi-nology/ekit-metrics/resilience"
 )
 
 // defaultTargetLabel 是 target label 在调用方未显式设置时的回退值。

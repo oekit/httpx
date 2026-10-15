@@ -3,7 +3,7 @@ package loadbalance
 import (
 	"sync/atomic"
 
-	"github.com/yi-nology/ekit-registry/registry"
+	"github.com/oekit/registry/registry"
 )
 
 // RoundRobinBalancer 轮询负载均衡器。

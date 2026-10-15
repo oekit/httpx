@@ -3,7 +3,7 @@ package loadbalance
 import (
 	"math/rand"
 
-	"github.com/yi-nology/ekit-registry/registry"
+	"github.com/oekit/registry/registry"
 )
 
 // RandomBalancer 随机负载均衡器。

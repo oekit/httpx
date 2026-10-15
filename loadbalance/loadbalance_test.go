@@ -3,7 +3,7 @@ package loadbalance
 import (
 	"testing"
 
-	"github.com/yi-nology/ekit-registry/registry"
+	"github.com/oekit/registry/registry"
 )
 
 type testInstance struct {
