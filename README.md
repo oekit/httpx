@@ -18,52 +18,34 @@ go get github.com/oekit/httpx@v0.1.4
 - \`httpx/\` — NewClient + WithNNS/WithCircuitBreaker/WithRetryConfig(指数退避+抖动)/WithMetrics/WithTracePropagation
 - \`loadbalance/\` — 加权负载均衡策略
 
-## 矩阵总览（20 活跃仓 + 19 微库，自动生成）
+## 矩阵总览（22 活跃模块，自动生成）
 
-| 仓库 | 内容 | 矩阵内依赖 |
+| 模块 | 内容 | 矩阵内依赖 |
 |---|---|---|
-| [ekit-bootstrap](https://github.com/oekit/bootstrap) | （见 README） | [ekit-bootstrap](https://github.com/oekit/bootstrap), [ekit-concurrency](https://github.com/oekit/concurrency), [ekit-core](https://github.com/oekit/core), [ekit-logx](https://github.com/oekit/logx), [ekit-metrics](https://github.com/oekit/metrics), [ekit-nns](https://github.com/oekit/nns), [ekit-registry](https://github.com/oekit/registry), [ekit-tracing](https://github.com/oekit/tracing) |
-| [ekit-cache](https://github.com/oekit/pkg/cache) | 进程内缓存微库——LRU O(1)、TOCTOU 修复的 LocalCache | — |
-| [ekit-concurrency](https://github.com/oekit/concurrency) | （见 README） | [ekit-concurrency](https://github.com/oekit/concurrency) |
-| [ekit-convert](https://github.com/oekit/pkg/convert) | 类型转换微库——字符串/数字/布尔/切片的宽容转换 | — |
-| [ekit-core](https://github.com/oekit/core) | Go 后端基础工具库——应用基建件（governance 治理 schema / lifecycle 生命周期契约 / network IP 工具 / version） | [ekit-core](https://github.com/oekit/core) |
-| [ekit-data](https://github.com/oekit/data) | （见 README） | [ekit-concurrency](https://github.com/oekit/concurrency), [ekit-logx](https://github.com/oekit/logx) |
-| [ekit-encoding](https://github.com/oekit/pkg/encoding) | 编解码微库——JSON/msgpack 等序列化助手 | — |
-| [ekit-enumx](https://github.com/oekit/pkg/enumx) | 枚举工具微库——确定性顺序的 All/Values/解析 | — |
-| [ekit-errors](https://github.com/oekit/pkg/errors) | 错误处理微库——Wrap/Cause 链、BizError（业务码/HTTP 码双轨）、sentinel 错误 | — |
-| [ekit-gorm](https://github.com/oekit/gorm) | （见 README） | [ekit-errors](https://github.com/oekit/pkg/errors), [ekit-gorm](https://github.com/oekit/gorm), [ekit-logx](https://github.com/oekit/logx), [ekit-pagination](https://github.com/oekit/pkg/pagination) |
-| [ekit-handler](https://github.com/oekit/handler) | （见 README） | [ekit-core](https://github.com/oekit/core), [ekit-errors](https://github.com/oekit/pkg/errors), [ekit-gorm](https://github.com/oekit/gorm), [ekit-handler](https://github.com/oekit/handler), [ekit-middleware](https://github.com/oekit/middleware), [ekit-pagination](https://github.com/oekit/pkg/pagination), [ekit-tracing](https://github.com/oekit/tracing), [ekit-validator](https://github.com/oekit/pkg/validator) |
-| [ekit-hertz](https://github.com/oekit/hertz) | （见 README） | [ekit-concurrency](https://github.com/oekit/concurrency), [ekit-core](https://github.com/oekit/core), [ekit-hertz](https://github.com/oekit/hertz), [ekit-logx](https://github.com/oekit/logx), [ekit-metrics](https://github.com/oekit/metrics), [ekit-nns](https://github.com/oekit/nns), [ekit-registry](https://github.com/oekit/registry), [ekit-tracing](https://github.com/oekit/tracing) |
-| [ekit-httpjson](https://github.com/oekit/pkg/httpjson) | HTTP JSON 微库——DoJSON 带 retry 语义与 Retry-After 尊重 | [ekit-stringx](https://github.com/oekit/pkg/stringx) |
-| [ekit-httpx](https://github.com/oekit/httpx) | （见 README） | [ekit-concurrency](https://github.com/oekit/concurrency), [ekit-httpx](https://github.com/oekit/httpx), [ekit-logx](https://github.com/oekit/logx), [ekit-metrics](https://github.com/oekit/metrics), [ekit-registry](https://github.com/oekit/registry) |
-| [ekit-istio](https://github.com/oekit/istio) | （见 README） | — |
-| [ekit-jsonrepair](https://github.com/oekit/pkg/jsonrepair) | JSON 修复微库——宽容修复链：截断/尾逗号/单引号/非标准值归一 | — |
-| [ekit-kitex](https://github.com/oekit/kitex) | （见 README） | [ekit-concurrency](https://github.com/oekit/concurrency), [ekit-core](https://github.com/oekit/core), [ekit-errors](https://github.com/oekit/pkg/errors), [ekit-kitex](https://github.com/oekit/kitex), [ekit-logx](https://github.com/oekit/logx), [ekit-metrics](https://github.com/oekit/metrics), [ekit-nns](https://github.com/oekit/nns), [ekit-registry](https://github.com/oekit/registry), [ekit-tracing](https://github.com/oekit/tracing) |
-| [ekit-kitex-examples](https://github.com/oekit/kitex-examples) | （见 README） | [ekit-bootstrap](https://github.com/oekit/bootstrap), [ekit-kitex](https://github.com/oekit/kitex), [ekit-kitex-examples](https://github.com/oekit/kitex-examples), [ekit-logx](https://github.com/oekit/logx), [ekit-registry](https://github.com/oekit/registry), [ekit-tracing](https://github.com/oekit/tracing) |
-| [ekit-logx](https://github.com/oekit/logx) | （见 README） | [ekit-logx](https://github.com/oekit/logx) |
-| [ekit-mathx](https://github.com/oekit/pkg/mathx) | 数学工具微库——安全随机、区间、平均值等评测统计助手 | — |
-| [ekit-metrics](https://github.com/oekit/metrics) | （见 README） | [ekit-core](https://github.com/oekit/core), [ekit-metrics](https://github.com/oekit/metrics) |
-| [ekit-middleware](https://github.com/oekit/middleware) | （见 README） | [ekit-concurrency](https://github.com/oekit/concurrency), [ekit-errors](https://github.com/oekit/pkg/errors), [ekit-logx](https://github.com/oekit/logx), [ekit-metrics](https://github.com/oekit/metrics), [ekit-middleware](https://github.com/oekit/middleware), [ekit-pathx](https://github.com/oekit/pkg/pathx), [ekit-registry](https://github.com/oekit/registry), [ekit-tracing](https://github.com/oekit/tracing) |
-| [ekit-network](https://github.com/oekit/network) | （见 README） | [ekit-concurrency](https://github.com/oekit/concurrency), [ekit-logx](https://github.com/oekit/logx), [ekit-tracing](https://github.com/oekit/tracing) |
-| [ekit-nns](https://github.com/oekit/nns) | （见 README） | [ekit-concurrency](https://github.com/oekit/concurrency), [ekit-core](https://github.com/oekit/core), [ekit-logx](https://github.com/oekit/logx), [ekit-nns](https://github.com/oekit/nns), [ekit-registry](https://github.com/oekit/registry) |
-| [ekit-nns-endpoint](https://github.com/oekit/nns-endpoint) | NNS 端点工厂——per-service 熔断（4xx 不计失败）、HTTP 换实例重试、gRPC 连接池、弹性指标 | [ekit-httpx](https://github.com/oekit/httpx), [ekit-logx](https://github.com/oekit/logx), [ekit-metrics](https://github.com/oekit/metrics), [ekit-nns](https://github.com/oekit/nns), [ekit-registry](https://github.com/oekit/registry) |
-| [ekit-pagination](https://github.com/oekit/pkg/pagination) | 分页微库——PageRequest/PageResponse 与换算 | — |
-| [ekit-pathx](https://github.com/oekit/pkg/pathx) | 路径匹配微库——glob（`vendor/**`、`*.test`）匹配 | — |
-| [ekit-ptrx](https://github.com/oekit/pkg/ptrx) | 指针工具微库——To/From/安全解引用 | — |
-| [ekit-redis](https://github.com/oekit/redis) | （见 README） | [ekit-concurrency](https://github.com/oekit/concurrency), [ekit-data](https://github.com/oekit/data), [ekit-logx](https://github.com/oekit/logx), [ekit-redis](https://github.com/oekit/redis) |
-| [ekit-registry](https://github.com/oekit/registry) | （见 README） | [ekit-core](https://github.com/oekit/core), [ekit-logx](https://github.com/oekit/logx), [ekit-registry](https://github.com/oekit/registry) |
-| [ekit-slicex](https://github.com/oekit/pkg/slicex) | 切片工具微库——Partition 二分组、GroupBy、去重与映射 | — |
-| [ekit-stringx](https://github.com/oekit/pkg/stringx) | 字符串工具微库——ID 生成、关键词匹配、缩进、复数化、模板替换 | — |
-| [ekit-timertask](https://github.com/oekit/timertask) | 定时任务微库——分片定时任务（FNV-1a hash、心跳续约） | [ekit-concurrency](https://github.com/oekit/concurrency), [ekit-logx](https://github.com/oekit/logx) |
-| [ekit-timex](https://github.com/oekit/pkg/timex) | 时间工具微库——格式化/解析/时间戳 + cron 表达式 | — |
-| [ekit-tracing](https://github.com/oekit/tracing) | （见 README） | [ekit-logx](https://github.com/oekit/logx) |
-| [ekit-uidgen](https://github.com/oekit/pkg/uidgen) | ID 生成微库——UUID、雪花、随机串 | — |
-| [ekit-validator](https://github.com/oekit/pkg/validator) | 参数校验微库——go-playground/validator 封装，ValidationError 归一为 BizError(400) | [ekit-errors](https://github.com/oekit/pkg/errors) |
-| [ekit-workflow](https://github.com/oekit/workflow) | （见 README） | [ekit-concurrency](https://github.com/oekit/concurrency), [ekit-logx](https://github.com/oekit/logx) |
+| [pkg](https://github.com/oekit/pkg) | 微工具集 16 合 1（errors/validator/stringx/slicex/enumx/convert/encoding/jsonrepair/httpjson/mathx/pathx/pagination/ptrx/timex/uidgen/cache） | — |
+| [concurrency](https://github.com/oekit/concurrency) | 并发与流控原语（async/group/singleflight/progress/syncx/ratelimit/retry） | — |
+| [logx](https://github.com/oekit/logx) | 统一日志门面（多后端可替换 + Sink + caller 归属）+ 优雅关停 | — |
+| [core](https://github.com/oekit/core) | 应用基建件（governance 治理 schema / lifecycle 契约 / network IP 工具 / version） | — |
+| [istio](https://github.com/oekit/istio) | Istio Proxyless——Kitex xDS 动态熔断 | — |
+| [metrics](https://github.com/oekit/metrics) | Prometheus 门面 + 弹性指标族 | [core](https://github.com/oekit/core) |
+| [tracing](https://github.com/oekit/tracing) | OpenTelemetry 追踪 + trace_id 真相源 | [logx](https://github.com/oekit/logx) |
+| [registry](https://github.com/oekit/registry) | 注册发现核心 + Nacos 实现 + 配置加载 + sdbridge | [core](https://github.com/oekit/core)、[logx](https://github.com/oekit/logx) |
+| [data](https://github.com/oekit/data) | 缓存检查器（TTL/failTTL/inflight 合并）+ LocalCache | [concurrency](https://github.com/oekit/concurrency)、[logx](https://github.com/oekit/logx) |
+| [gorm](https://github.com/oekit/gorm) | SQL/GORM 全家——连接池增强、框架无关 CRUD Service、仓储 | [logx](https://github.com/oekit/logx)、[pkg](https://github.com/oekit/pkg) |
+| [redis](https://github.com/oekit/redis) | Redis 全家——客户端封装、缓存后端、分布式锁 | [concurrency](https://github.com/oekit/concurrency)、[data](https://github.com/oekit/data)、[logx](https://github.com/oekit/logx) |
+| [httpx](https://github.com/oekit/httpx) | HTTP 客户端 + 负载均衡——服务发现/熔断/重试/指标/OTel 透传 | [concurrency](https://github.com/oekit/concurrency)、[core](https://github.com/oekit/core)、[logx](https://github.com/oekit/logx)、[metrics](https://github.com/oekit/metrics)、[registry](https://github.com/oekit/registry)、[tracing](https://github.com/oekit/tracing) |
+| [timertask](https://github.com/oekit/timertask) | 分片定时任务（FNV-1a、心跳续约） | [concurrency](https://github.com/oekit/concurrency)、[logx](https://github.com/oekit/logx) |
+| [middleware](https://github.com/oekit/middleware) | Hertz 自研标准中间件栈 + contrib 桥接 + hmw | [concurrency](https://github.com/oekit/concurrency)、[core](https://github.com/oekit/core)、[logx](https://github.com/oekit/logx)、[metrics](https://github.com/oekit/metrics)、[pkg](https://github.com/oekit/pkg)、[registry](https://github.com/oekit/registry)、[tracing](https://github.com/oekit/tracing) |
+| [nns](https://github.com/oekit/nns) | NNS 服务治理客户端——provider 无关发现/配置/实例缓存 | [concurrency](https://github.com/oekit/concurrency)、[core](https://github.com/oekit/core)、[logx](https://github.com/oekit/logx)、[registry](https://github.com/oekit/registry) |
+| [nns-endpoint](https://github.com/oekit/nns-endpoint) | NNS 端点工厂——per-service 熔断、换实例重试、gRPC 池 | [concurrency](https://github.com/oekit/concurrency)、[core](https://github.com/oekit/core)、[httpx](https://github.com/oekit/httpx)、[logx](https://github.com/oekit/logx)、[metrics](https://github.com/oekit/metrics)、[nns](https://github.com/oekit/nns)、[registry](https://github.com/oekit/registry) |
+| [bootstrap](https://github.com/oekit/bootstrap) | 应用生命周期引导——bootstrap.Run 骨架 + healthz | [concurrency](https://github.com/oekit/concurrency)、[core](https://github.com/oekit/core)、[logx](https://github.com/oekit/logx)、[metrics](https://github.com/oekit/metrics)、[nns](https://github.com/oekit/nns)、[registry](https://github.com/oekit/registry)、[tracing](https://github.com/oekit/tracing) |
+| [handler](https://github.com/oekit/handler) | HTTP handler 层——通用 CRUD Handler、参数绑定、版本端点 | [concurrency](https://github.com/oekit/concurrency)、[core](https://github.com/oekit/core)、[gorm](https://github.com/oekit/gorm)、[logx](https://github.com/oekit/logx)、[metrics](https://github.com/oekit/metrics)、[middleware](https://github.com/oekit/middleware)、[pkg](https://github.com/oekit/pkg)、[registry](https://github.com/oekit/registry)、[tracing](https://github.com/oekit/tracing) |
+| [hertz](https://github.com/oekit/hertz) | Hertz 运行时集成——日志桥接、生命周期、SSE/health/metrics、适配器、OTel | [bootstrap](https://github.com/oekit/bootstrap)、[concurrency](https://github.com/oekit/concurrency)、[core](https://github.com/oekit/core)、[logx](https://github.com/oekit/logx)、[metrics](https://github.com/oekit/metrics)、[nns](https://github.com/oekit/nns)、[registry](https://github.com/oekit/registry)、[tracing](https://github.com/oekit/tracing) |
+| [kitex](https://github.com/oekit/kitex) | Kitex 生态——日志桥接、治理热更、生命周期、BizError 桥接、kitexotel | [bootstrap](https://github.com/oekit/bootstrap)、[concurrency](https://github.com/oekit/concurrency)、[core](https://github.com/oekit/core)、[logx](https://github.com/oekit/logx)、[metrics](https://github.com/oekit/metrics)、[nns](https://github.com/oekit/nns)、[pkg](https://github.com/oekit/pkg)、[registry](https://github.com/oekit/registry)、[tracing](https://github.com/oekit/tracing) |
+| [workflow](https://github.com/oekit/workflow) | 组合式流程编排——串行/并行/异步/条件分支 + Hook AOP | [concurrency](https://github.com/oekit/concurrency)、[logx](https://github.com/oekit/logx) |
+| [kitex-examples](https://github.com/oekit/kitex-examples) | Kitex echo 示例——client/server + IDL + 治理配置 | [bootstrap](https://github.com/oekit/bootstrap)、[concurrency](https://github.com/oekit/concurrency)、[core](https://github.com/oekit/core)、[kitex](https://github.com/oekit/kitex)、[logx](https://github.com/oekit/logx)、[metrics](https://github.com/oekit/metrics)、[nns](https://github.com/oekit/nns)、[registry](https://github.com/oekit/registry)、[tracing](https://github.com/oekit/tracing) |
 
-> `ekit-observability` 已在 Round-2 解散归档；本表由源码 import 自动生成。
-> 依赖严格单向：工具微库/L0 → 可观测门面 → registry → data/httpx/middleware → nns/bootstrap → hertz/kitex。
-
+> 依赖严格自底向上；微库已于 2026-10 合并为 [pkg](https://github.com/oekit/pkg)，旧微库仓已删除。
 ## 当前仓库依赖
 
 详见上方矩阵表中本仓库行。
