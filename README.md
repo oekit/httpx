@@ -6,7 +6,7 @@
 > 🤖 AI Agent：本仓规范与硬规则见 [AGENTS.md](AGENTS.md)；机器可读索引见 [llms.txt](https://oekit.github.io/llms.txt)（接口签名以源码为准）。
 
 本仓库是 [ekit](https://git.enjoye.top/enjoydream/ekit)（`git.enjoye.top/enjoydream/ekit` v0.34.0）
-拆分出的独立 Go module，属于 **oekit** oekit（Open Easy Kit）模块矩阵。
+拆分出的独立 Go module，属于 oekit（Open Easy Kit）模块矩阵。
 
 ## 安装
 
