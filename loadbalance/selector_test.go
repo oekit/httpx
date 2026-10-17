@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"testing"
+	"time"
 )
 
 func nodesOf(addrs ...string) []Node {
@@ -165,7 +166,7 @@ func TestNormalizeSelectorName(t *testing.T) {
 }
 
 func TestNewSelectorUnknownStrategy(t *testing.T) {
-	if _, err := NewSelector("p2c"); err == nil {
+	if _, err := NewSelector("p2cx"); err == nil {
 		t.Fatal("unknown strategy should error")
 	}
 }
@@ -185,5 +186,79 @@ func TestNodesFromNilClosures(t *testing.T) {
 	}
 	if !slices.Equal(addrs, []string{"x", "y"}) {
 		t.Fatalf("order broken: %v", addrs)
+	}
+}
+
+// TestSelectorP2CSkewsToFastNode 钉住 #6：P2C 依据 DoneFunc 回写的调用时长
+// 建立 EWMA，把流量从慢节点撬到快节点。
+func TestSelectorP2CSkewsToFastNode(t *testing.T) {
+	sel, err := NewSelector("p2c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodes := NodesFrom([]string{"fast", "slow"},
+		func(s string) string { return s }, func(string) float64 { return 1 },
+		nil, func(string) string { return "svc" })
+
+	ctx := context.Background()
+	slow, fast := 0, 0
+	const rounds = 40
+	for i := 0; i < rounds; i++ {
+		n, done, err := sel.Select(ctx, nodes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		isSlow := n.Address() == "slow"
+		// 模拟慢节点耗时（EWMA 经 done 回写采样；fast 立即 done）
+		if isSlow {
+			time.Sleep(20 * time.Millisecond)
+		}
+		done(ctx, DoneInfo{})
+		if isSlow {
+			slow++
+		} else {
+			fast++
+		}
+	}
+	// warmup 后流量应显著偏向 fast（各 50% 起步 → fast 应 > 70%）
+	if fast <= slow {
+		t.Fatalf("p2c did not skew to fast node: fast=%d slow=%d", fast, slow)
+	}
+}
+
+// TestSelectorP2CErrorPenalty 钉住错误惩罚：持续报错的节点 EWMA 被抬升，
+// 后续选择偏向健康节点。
+func TestSelectorP2CErrorPenalty(t *testing.T) {
+	sel, _ := NewSelector("p2c")
+	nodes := NodesFrom([]string{"healthy", "flaky"},
+		func(s string) string { return s }, func(string) float64 { return 1 },
+		nil, func(string) string { return "svc" })
+
+	ctx := context.Background()
+	healthyPicks := 0
+	const rounds = 30
+	for i := 0; i < rounds; i++ {
+		n, done, _ := sel.Select(ctx, nodes)
+		isFlaky := n.Address() == "flaky"
+		if isFlaky {
+			time.Sleep(15 * time.Millisecond)
+			done(ctx, DoneInfo{Err: errors.New("flaky fail")})
+		} else {
+			done(ctx, DoneInfo{})
+			healthyPicks++
+		}
+	}
+	if healthyPicks < rounds*7/10 {
+		t.Fatalf("error penalty not effective: healthy=%d/%d", healthyPicks, rounds)
+	}
+}
+
+// TestSelectorP2CSingleNode 钉住边界：单节点直接返回。
+func TestSelectorP2CSingleNode(t *testing.T) {
+	sel, _ := NewSelector("p2c")
+	nodes := nodesOf("only")
+	n, done, err := sel.Select(context.Background(), nodes)
+	if err != nil || n.Address() != "only" || done == nil {
+		t.Fatalf("single node: %v %v %v", n, done, err)
 	}
 }

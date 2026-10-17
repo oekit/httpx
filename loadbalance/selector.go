@@ -19,6 +19,9 @@ const (
 	StrategyRoundRobin = "roundrobin"
 	StrategyRandom     = "random"
 	StrategyWeighted   = "weighted"
+	// StrategyP2C 是自适应选择策略（Power of Two Choices，#6）：
+	// 依据 DoneFunc 回写的调用时长 EWMA，把流量从慢/故障节点撬走。
+	StrategyP2C = "p2c"
 )
 
 // ErrNoAvailable 表示无可选节点（候选为空或全部被过滤）。
@@ -114,6 +117,8 @@ func NewSelector(name string, opts ...SelectorOption) (Selector, error) {
 		return newRandomSelector(opts...), nil
 	case StrategyWeighted:
 		return newWeightedSelector(opts...), nil
+	case StrategyP2C:
+		return newP2CSelector(opts...), nil
 	default:
 		return nil, fmt.Errorf("unsupported load balance strategy: %s", name)
 	}
