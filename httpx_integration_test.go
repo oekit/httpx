@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/hertz/pkg/protocol"
-	"github.com/oekit/registry/registry"
+	"github.com/oekit/registry"
 	"github.com/oekit/tracing/traceid"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"

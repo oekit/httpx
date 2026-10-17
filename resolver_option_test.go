@@ -18,42 +18,50 @@ func (r *countingResolver) Resolve(_ context.Context) ([]string, error) {
 }
 
 // TestOptionOrder_EndpointsFirst 回归测试：WithEndpoints 之后调用
-// WithRefreshInterval/WithBalance 不得丢失静态 endpoints（L4）。
+// WithRefreshInterval/WithSelector 不得丢失静态 endpoints（L4）。
 func TestOptionOrder_EndpointsFirst(t *testing.T) {
+	sel, err := NewConsistentHashSelector()
+	if err != nil {
+		t.Fatal(err)
+	}
 	c := NewClient("svc",
 		WithEndpoints("http://10.0.0.1:8080", "http://10.0.0.2:8080"),
 		WithRefreshInterval(time.Hour),
-		WithBalance(&HashBalance{}),
+		WithSelector(sel),
 	)
 	defer c.Close()
 
 	if c.endpointManager == nil {
 		t.Fatal("endpointManager is nil")
 	}
-	eps := c.endpointManager.GetEndpoints()
-	if len(eps) != 2 {
-		t.Errorf("len(endpoints) = %d, want 2（静态 endpoints 被后续 ClientOption 丢失）", len(eps))
+	nodes := c.endpointManager.GetNodes()
+	if len(nodes) != 2 {
+		t.Errorf("len(nodes) = %d, want 2（静态 endpoints 被后续 ClientOption 丢失）", len(nodes))
 	}
-	if _, ok := c.endpointManager.balance.(*HashBalance); !ok {
-		t.Errorf("balance = %T, want *HashBalance", c.endpointManager.balance)
+	if _, ok := c.endpointManager.selector.(*ConsistentHashSelector); !ok {
+		t.Errorf("selector = %T, want *ConsistentHashSelector", c.endpointManager.selector)
 	}
 }
 
-// TestOptionOrder_BalanceFirst 回归测试：WithBalance 先于 EndpointManager
+// TestOptionOrder_SelectorFirst 回归测试：WithSelector 先于 EndpointManager
 // 创建时不得被静默丢弃，选项顺序不影响最终行为。
-func TestOptionOrder_BalanceFirst(t *testing.T) {
+func TestOptionOrder_SelectorFirst(t *testing.T) {
+	sel, err := NewConsistentHashSelector()
+	if err != nil {
+		t.Fatal(err)
+	}
 	c := NewClient("svc",
-		WithBalance(&HashBalance{}),
+		WithSelector(sel),
 		WithRefreshInterval(time.Hour),
 		WithEndpoints("http://10.0.0.1:8080"),
 	)
 	defer c.Close()
 
-	if _, ok := c.endpointManager.balance.(*HashBalance); !ok {
-		t.Errorf("balance = %T, want *HashBalance", c.endpointManager.balance)
+	if _, ok := c.endpointManager.selector.(*ConsistentHashSelector); !ok {
+		t.Errorf("selector = %T, want *ConsistentHashSelector", c.endpointManager.selector)
 	}
-	if eps := c.endpointManager.GetEndpoints(); len(eps) != 1 {
-		t.Errorf("len(endpoints) = %d, want 1", len(eps))
+	if nodes := c.endpointManager.GetNodes(); len(nodes) != 1 {
+		t.Errorf("len(nodes) = %d, want 1", len(nodes))
 	}
 }
 

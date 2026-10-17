@@ -1,14 +1,18 @@
-// Package loadbalance 提供与具体服务发现实现解耦的负载均衡策略。
+// Package loadbalance 提供与具体服务发现实现解耦的节点选择抽象（Selector，
+// 参照 go-kratos selector）。
 //
-// 本包只依赖一个轻量的 Instance 接口（仅需 GetWeight），不绑定任何特定的
-// 服务实例结构（如 nns/metadata.Instance、httpx.NNSInstance），因此可被
-// network、nns 等任意上层包复用，是 ekit 负载均衡的唯一算法实现。
+// v0.4.0 起 Selector 全面替代 v0.3.x 的 Balancer：
+//   - Node 携带完整实例信息（地址/权重/服务名/Metadata）；
+//   - Select 支持 WithFilter 按 Metadata 过滤候选、WithKey 一致性选点键；
+//   - 调用结束经 DoneFunc 回写结果（DoneInfo），配合 WithDoneHook 采集，
+//     为 P2C/EWMA 等自适应算法预留数据入口。
 //
-// 支持的策略：
-//   - 轮询（RoundRobin）
-//   - 随机（Random）
-//   - 加权随机（Weighted / WeightedRandom）
+// 支持的策略（NewSelector 按名创建，别名自动归一）：
+//   - roundrobin（轮询）
+//   - random（随机）
+//   - weighted（加权随机）
 //
-// 使用 New 按策略名创建，或直接调用具体的 NewXxx 构造器。
-// 对于实现 Instance 接口的切片类型，用 ToInstances 转换后即可喂给 Balancer。
+// 本包不 import 任何实例类型或框架——registry.Instance 等由调用方经
+// NodesFrom 泛型适配器（字段闭包映射）构造 Node。nns-endpoint 等上层包
+// 与 httpx 根包复用本实现。
 package loadbalance

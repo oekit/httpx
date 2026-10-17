@@ -13,6 +13,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/common/config"
 	"github.com/cloudwego/hertz/pkg/network"
 	"github.com/cloudwego/hertz/pkg/protocol"
+	"github.com/oekit/httpx/loadbalance"
 	prom "github.com/prometheus/client_golang/prometheus"
 	"github.com/sony/gobreaker"
 	"go.opentelemetry.io/otel"
@@ -293,20 +294,22 @@ func WithRefreshInterval(d time.Duration) ClientOption {
 		old := c.endpointManager
 		old.Stop()
 		m := c.newEndpointManager(old.resolver, d)
-		m.SetEndpoints(old.GetEndpoints())
+		m.SetNodes(old.GetNodes())
 		c.endpointManager = m
 	}
 }
 
-// WithBalance 设置负载均衡策略。
-func WithBalance(strategy BalanceStrategy) ClientOption {
+// WithSelector 设置节点选择器（roundrobin/random/weighted/一致性哈希等，
+// 经 loadbalance.NewSelector 或 NewConsistentHashSelector 构造）。
+// v0.4.0 起替代 WithBalance。
+func WithSelector(sel loadbalance.Selector) ClientOption {
 	return func(c *Client) {
-		if strategy == nil {
+		if sel == nil {
 			return
 		}
-		c.pendingBalance = strategy
+		c.pendingSelector = sel
 		if c.endpointManager != nil {
-			c.endpointManager.balance = strategy
+			c.endpointManager.selector = sel
 		}
 	}
 }

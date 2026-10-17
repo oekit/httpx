@@ -3,12 +3,14 @@ package httpx
 import (
 	"context"
 
+	"sync/atomic"
+	"time"
+
 	"github.com/cloudwego/hertz/pkg/app/client"
 	"github.com/cloudwego/hertz/pkg/common/config"
 	"github.com/cloudwego/hertz/pkg/protocol"
+	"github.com/oekit/httpx/loadbalance"
 	"github.com/oekit/metrics/resilience"
-	"sync/atomic"
-	"time"
 )
 
 // Client 是封装了 Hertz HTTP 客户端的高层 HTTP 调用器，支持服务发现、负载均衡、熔断和指标。
@@ -25,7 +27,7 @@ type Client struct {
 	basicPass              string
 	endpointManager        *EndpointManager
 	priorityQueue          *PriorityQueue
-	pendingBalance         BalanceStrategy
+	pendingSelector        loadbalance.Selector
 	pendingRefreshInterval time.Duration
 	hzOpts                 []config.ClientOption
 	mw                     []client.Middleware

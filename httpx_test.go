@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"net/url"
 	"testing"
 	"time"
 
@@ -286,45 +285,32 @@ func TestServiceError_Fields(t *testing.T) {
 }
 
 func TestBalanceStrategies(t *testing.T) {
-	endpoints := []string{"http://1.1.1.1", "http://2.2.2.2", "http://3.3.3.3"}
-	req := &http.Request{
-		URL: &url.URL{Path: "/test"},
+	nodes := NodesFromEndpoints([]string{"http://1.1.1.1", "http://2.2.2.2", "http://3.3.3.3"})
+	ctx := context.Background()
+
+	// roundrobin/random/weighted 三策略均选出有效节点
+	for _, name := range []string{"roundrobin", "random", "weighted"} {
+		sel, err := loadbalance.NewSelector(name)
+		if err != nil {
+			t.Fatalf("NewSelector(%s): %v", name, err)
+		}
+		n, done, err := sel.Select(ctx, nodes)
+		if err != nil || n == nil || n.Address() == "" || done == nil {
+			t.Errorf("%s: select broken: node=%v done=%v err=%v", name, n, done, err)
+		}
 	}
 
-	// 测试 HashBalance
-	hash := &HashBalance{}
-	picked := hash.Pick(endpoints, req)
-	if picked == "" {
-		t.Error("expected non-empty pick from HashBalance")
+	// 空候选返回 ErrNoAvailable
+	sel, _ := loadbalance.NewSelector("roundrobin")
+	if _, _, err := sel.Select(ctx, nil); err == nil {
+		t.Error("expected error for empty nodes")
 	}
 
-	// 测试 RoundRobinBalance（通过 loadbalance 适配器）
-	rr := NewBalanceAdapter(loadbalance.NewRoundRobin())
-	picked1 := rr.Pick(endpoints, req)
-	picked2 := rr.Pick(endpoints, req)
-	if picked1 == "" || picked2 == "" {
-		t.Error("expected non-empty pick from RoundRobinBalance")
-	}
-
-	// 测试 RandomBalance（通过 loadbalance 适配器）
-	random := NewBalanceAdapter(loadbalance.NewRandom())
-	picked = random.Pick(endpoints, req)
-	if picked == "" {
-		t.Error("expected non-empty pick from RandomBalance")
-	}
-
-	// 测试空 endpoints
-	if hash.Pick(nil, req) != "" {
-		t.Error("expected empty string for nil endpoints")
-	}
-	if hash.Pick([]string{}, req) != "" {
-		t.Error("expected empty string for empty endpoints")
-	}
-
-	// 测试单个 endpoint
-	single := []string{"http://1.1.1.1"}
-	if hash.Pick(single, req) != "http://1.1.1.1" {
-		t.Error("expected single endpoint")
+	// 单个节点
+	single := NodesFromEndpoints([]string{"http://1.1.1.1"})
+	n, _, err := sel.Select(ctx, single)
+	if err != nil || n.Address() != "http://1.1.1.1" {
+		t.Errorf("single endpoint: %v %v", n, err)
 	}
 }
 
@@ -406,26 +392,22 @@ func TestEndpointManager(t *testing.T) {
 	// 设置 endpoints
 	m.SetEndpoints([]string{"http://1.1.1.1", "http://2.2.2.2"})
 
-	// 测试获取 endpoints
-	ep := m.GetEndpoints()
-	if len(ep) != 2 {
-		t.Errorf("expected 2 endpoints, got %d", len(ep))
+	// 测试获取节点
+	nodes := m.GetNodes()
+	if len(nodes) != 2 {
+		t.Errorf("expected 2 nodes, got %d", len(nodes))
 	}
 
 	// 测试 Pick
-	req := &http.Request{
-		URL: &url.URL{Path: "/test"},
-	}
-	picked := m.Pick(req)
-	if picked == "" {
-		t.Error("expected non-empty pick")
+	picked, done, err := m.Pick(context.Background(), "/test")
+	if err != nil || picked == "" || done == nil {
+		t.Errorf("pick broken: %q %v %v", picked, done, err)
 	}
 
 	// 测试单个 endpoint
 	m.SetEndpoints([]string{"http://3.3.3.3"})
-	ep = m.GetEndpoints()
-	if len(ep) != 1 {
-		t.Errorf("expected 1 endpoint, got %d", len(ep))
+	if got := m.GetNodes(); len(got) != 1 {
+		t.Errorf("expected 1 node, got %d", len(got))
 	}
 
 	// 停止

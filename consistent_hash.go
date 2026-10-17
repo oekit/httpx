@@ -1,49 +1,51 @@
 package httpx
 
 import (
+	"context"
 	"hash/fnv"
-	"net/http"
 	"sort"
 	"strconv"
 	"sync"
+
+	"github.com/oekit/httpx/loadbalance"
 )
 
-// defaultConsistentReplicas 每个 endpoint 在哈希环上的默认虚拟副本数。
+// defaultConsistentReplicas 每个节点在哈希环上的默认虚拟副本数。
 // 值越大键分布越均匀，重建环与查找的开销越大；沿用 go-zero ConsistentHash
 // 的同款默认值。
 const defaultConsistentReplicas = 100
 
-// consistentNode 哈希环节点：hash 排序后二分查找，idx 映射回 endpoint 下标。
+// consistentNode 哈希环节点：hash 排序后二分查找，idx 映射回节点下标。
 type consistentNode struct {
 	hash uint64
 	idx  int
 }
 
-// ConsistentHashBalance 一致性哈希负载均衡：同一 key 稳定路由到同一 endpoint，
-// endpoint 增减仅引起相邻键的重新映射（对比 HashBalance 的全量重排）。
-// 适合有状态粘滞路由（同用户/同租户粘住同实例）且实例列表动态变化的场景。
+// ConsistentHashSelector 一致性哈希选择器：同一 key 稳定路由到同一节点，
+// 节点增减仅引起相邻键的重新映射。适合有状态粘滞路由（同用户/同租户
+// 粘住同实例）且实例列表动态变化的场景。
 //
-// key 缺省取请求路径（可用 WithConsistentKeyFunc 定制，如同租户取 header）；
-// 实现了 WeightedBalanceStrategy——resolver 提供实例权重时按权重折算各节点
-// 虚拟副本数，注册中心权重配置照常生效。
-type ConsistentHashBalance struct {
+// key 取 SelectOption WithKey 值（httpx EndpointManager 默认传请求 PATH）；
+// 节点权重按比例折算虚拟副本数（等权均值归一，clamp 到 [1, 4×base]），
+// 注册中心权重配置照常生效。
+//
+// v0.4.0 起替代 ConsistentHashBalance（BalanceStrategy 形态已删除）。
+type ConsistentHashSelector struct {
 	replicas int
 	hashFunc func([]byte) uint64
-	keyFunc  func(req *http.Request) string
 
-	mu        sync.RWMutex
-	endpoints []string         // 当前环对应的 endpoint 列表（变更检测）
-	weights   []float64        // 当前环对应的权重（nil = 等权）
-	ring      []consistentNode // 按 hash 升序
+	mu    sync.RWMutex
+	nodes []loadbalance.Node // 当前环对应的节点列表（变更检测）
+	ring  []consistentNode   // 按 hash 升序
 }
 
-// ConsistentHashOption ConsistentHashBalance 的可选参数。
-type ConsistentHashOption func(*ConsistentHashBalance)
+// ConsistentHashOption ConsistentHashSelector 的可选参数。
+type ConsistentHashOption func(*ConsistentHashSelector)
 
-// WithConsistentReplicas 设置每个 endpoint 的虚拟副本数（默认 100）。
+// WithConsistentReplicas 设置每个节点的虚拟副本数（默认 100）。
 // n <= 0 被忽略。
 func WithConsistentReplicas(n int) ConsistentHashOption {
-	return func(b *ConsistentHashBalance) {
+	return func(b *ConsistentHashSelector) {
 		if n > 0 {
 			b.replicas = n
 		}
@@ -52,73 +54,50 @@ func WithConsistentReplicas(n int) ConsistentHashOption {
 
 // WithConsistentHashFunc 自定义哈希函数（默认 FNV-1a 64）。nil 被忽略。
 func WithConsistentHashFunc(fn func([]byte) uint64) ConsistentHashOption {
-	return func(b *ConsistentHashBalance) {
+	return func(b *ConsistentHashSelector) {
 		if fn != nil {
 			b.hashFunc = fn
 		}
 	}
 }
 
-// WithConsistentKeyFunc 自定义路由 key 提取（默认请求路径）。nil 被忽略。
-// key 语义由业务保证（如同租户取 header 值）；恒为空的 key 会把全部请求
-// 路由到同一节点。
-func WithConsistentKeyFunc(fn func(req *http.Request) string) ConsistentHashOption {
-	return func(b *ConsistentHashBalance) {
-		if fn != nil {
-			b.keyFunc = fn
-		}
-	}
-}
-
-// NewConsistentHashBalance 创建一致性哈希负载均衡策略。
-func NewConsistentHashBalance(opts ...ConsistentHashOption) *ConsistentHashBalance {
-	b := &ConsistentHashBalance{
+// NewConsistentHashSelector 创建一致性哈希选择器。
+func NewConsistentHashSelector(opts ...ConsistentHashOption) (*ConsistentHashSelector, error) {
+	b := &ConsistentHashSelector{
 		replicas: defaultConsistentReplicas,
 		hashFunc: defaultConsistentHash,
-		keyFunc:  defaultConsistentKey,
 	}
 	for _, opt := range opts {
 		opt(b)
 	}
-	return b
+	return b, nil
 }
 
-// SetWeights 更新实例权重（WeightedBalanceStrategy 实现）：权重按比例折算
-// 各节点虚拟副本数（等权均值归一），下次 Pick 触发重建环。
-func (b *ConsistentHashBalance) SetWeights(weights []float64) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.weights = weights
-	b.ring = nil // 置空触发重建，endpoint 不变也重建（权重已变）
-}
-
-// Pick 按一致性哈希选择 endpoint。
-func (b *ConsistentHashBalance) Pick(endpoints []string, req *http.Request) string {
-	if len(endpoints) == 0 {
-		return ""
+// Select 按一致性哈希选择节点。
+func (b *ConsistentHashSelector) Select(ctx context.Context, nodes []loadbalance.Node, opts ...loadbalance.SelectOption) (loadbalance.Node, loadbalance.DoneFunc, error) {
+	cand := loadbalance.Filtered(nodes, opts)
+	if len(cand) == 0 {
+		return nil, nil, loadbalance.ErrNoAvailable
 	}
-	if len(endpoints) == 1 {
-		return endpoints[0]
+	if len(cand) == 1 {
+		return cand[0], func(context.Context, loadbalance.DoneInfo) {}, nil
 	}
 
-	ring := b.ringFor(endpoints)
-
-	var key string
-	if req != nil && b.keyFunc != nil {
-		key = b.keyFunc(req)
-	}
-	h := b.hashFunc([]byte(key))
+	ring := b.ringFor(cand)
+	h := b.hashFunc([]byte(loadbalance.Key(opts)))
 	i := sort.Search(len(ring), func(i int) bool { return ring[i].hash >= h })
 	if i == len(ring) {
 		i = 0 // 环回绕：取环上最小 hash 的节点
 	}
-	return endpoints[ring[i].idx]
+	selected := cand[ring[i].idx]
+	return selected, func(ctx context.Context, di loadbalance.DoneInfo) {}, nil
 }
 
-// ringFor 返回当前 endpoint 列表（与权重）对应的环；列表或权重变化时重建。
-func (b *ConsistentHashBalance) ringFor(endpoints []string) []consistentNode {
+// ringFor 返回当前节点列表对应的环；列表变化时重建（权重已折算在副本数中，
+// 节点对象携带权重，列表不变则环复用）。
+func (b *ConsistentHashSelector) ringFor(nodes []loadbalance.Node) []consistentNode {
 	b.mu.RLock()
-	ring, ok := b.ring, b.sameViewLocked(endpoints)
+	ring, ok := b.ring, b.sameViewLocked(nodes)
 	b.mu.RUnlock()
 	if ok && ring != nil {
 		return ring
@@ -126,22 +105,26 @@ func (b *ConsistentHashBalance) ringFor(endpoints []string) []consistentNode {
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.ring != nil && b.sameViewLocked(endpoints) {
+	if b.ring != nil && b.sameViewLocked(nodes) {
 		return b.ring // 双重检查：并发重建已完成
 	}
-	ring = buildConsistentRing(endpoints, b.weights, b.replicas, b.hashFunc)
-	b.endpoints = append(b.endpoints[:0], endpoints...)
+	ring = buildConsistentRing(nodes, b.replicas, b.hashFunc)
+	b.nodes = append(b.nodes[:0], nodes...)
 	b.ring = ring
 	return ring
 }
 
-// sameViewLocked endpoint 与权重均未变化（调用方持有锁）。
-func (b *ConsistentHashBalance) sameViewLocked(endpoints []string) bool {
-	if len(b.endpoints) != len(endpoints) {
+// sameViewLocked 节点地址列表未变化（调用方持有锁）。
+// 节点对象来自 EndpointManager 每轮刷新的全量重建，地址列表逐项比较即可
+// 判定环是否需要重建（权重变化必然伴随刷新产生新列表，地址相同权重不同
+// 的场景由 EndpointManager 刷新语义保证重建——刷新后 nodes 切片本身是
+// 新对象，这里按地址比较是性能折中，权重单点调权场景需等下一轮刷新生效）。
+func (b *ConsistentHashSelector) sameViewLocked(nodes []loadbalance.Node) bool {
+	if len(b.nodes) != len(nodes) {
 		return false
 	}
-	for i := range endpoints {
-		if b.endpoints[i] != endpoints[i] {
+	for i := range nodes {
+		if b.nodes[i].Address() != nodes[i].Address() {
 			return false
 		}
 	}
@@ -149,27 +132,22 @@ func (b *ConsistentHashBalance) sameViewLocked(endpoints []string) bool {
 }
 
 // buildConsistentRing 构建哈希环：每节点 replicas 个虚拟副本（虚拟键
-// "replica:addr"），有权重时按权重/均值折算副本数（clamp 到 [1, 4×base]）。
-func buildConsistentRing(endpoints []string, weights []float64, baseReplicas int, hash func([]byte) uint64) []consistentNode {
+// "replica:addr"），按权重/均值折算副本数（clamp 到 [1, 4×base]）。
+func buildConsistentRing(nodes []loadbalance.Node, baseReplicas int, hash func([]byte) uint64) []consistentNode {
 	mean := 0.0
-	hasWeights := len(weights) == len(endpoints)
-	if hasWeights {
-		for _, w := range weights {
-			mean += w
-		}
-		mean /= float64(len(weights))
-		if mean <= 0 {
-			hasWeights = false // 全零/负权重退化为等权
-		}
+	for _, n := range nodes {
+		mean += n.Weight()
 	}
+	mean /= float64(len(nodes))
+	hasWeights := mean > 0
 
-	ring := make([]consistentNode, 0, len(endpoints)*baseReplicas)
-	for i, ep := range endpoints {
+	ring := make([]consistentNode, 0, len(nodes)*baseReplicas)
+	for i, n := range nodes {
 		replicas := baseReplicas
 		if hasWeights {
-			w := weights[i]
+			w := n.Weight()
 			if w <= 0 {
-				w = 1 // 权重 <=0 按等权 1 处理（与 WeightedBalancer 约定一致）
+				w = 1 // 权重 <=0 按等权 1 处理
 			}
 			replicas = int(float64(baseReplicas) * w / mean)
 			if replicas < 1 {
@@ -181,7 +159,7 @@ func buildConsistentRing(endpoints []string, weights []float64, baseReplicas int
 		}
 		for r := 0; r < replicas; r++ {
 			ring = append(ring, consistentNode{
-				hash: hash([]byte(strconv.Itoa(r) + ":" + ep)),
+				hash: hash([]byte(strconv.Itoa(r) + ":" + n.Address())),
 				idx:  i,
 			})
 		}
@@ -196,6 +174,3 @@ func defaultConsistentHash(data []byte) uint64 {
 	h.Write(data)
 	return h.Sum64()
 }
-
-// defaultConsistentKey 缺省路由 key：请求路径。
-func defaultConsistentKey(req *http.Request) string { return req.URL.Path }

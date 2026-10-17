@@ -2,34 +2,43 @@ package httpx
 
 import (
 	"context"
-	"net/http"
 	"testing"
 
 	"github.com/oekit/httpx/loadbalance"
-	"github.com/oekit/registry/registry"
+	"github.com/oekit/registry"
 )
 
-// TestWeightedResolver_EndpointManagerWeightPropagation 钉住权重贯通语义：
-// NNSResolver（实现 WeightedResolver）+ 加权 LB 策略时，注册中心配置的
-// 实例权重真实生效。修复前 NNSResolver 把实例压平成字符串、lbAdapter
-// 恒按权重 1 适配——加权策略在 httpx 路径名存实亡。
-func TestWeightedResolver_EndpointManagerWeightPropagation(t *testing.T) {
+// stubNNSClient 测试用 NNS 客户端（复用自集成测试）。
+
+// TestInstanceResolver_WeightPropagation 钉住权重贯通语义：
+// NNSResolver（实现 InstanceResolver）+ 加权 Selector 时，注册中心配置的
+// 实例权重真实生效。v0.3.x 曾把实例压平成字符串导致加权策略名存实亡，
+// 本测试防止回归。
+func TestInstanceResolver_WeightPropagation(t *testing.T) {
 	stub := &stubNNSClient{instances: []registry.Instance{
-		{IP: "10.0.0.1", Port: 8080, Weight: 9},
-		{IP: "10.0.0.2", Port: 8080, Weight: 1},
+		{Service: "svc-a", IP: "10.0.0.1", Port: 8080, Weight: 9},
+		{Service: "svc-a", IP: "10.0.0.2", Port: 8080, Weight: 1},
 	}}
 	r := NewNNSResolver("svc-a", stub)
 
+	sel, err := loadbalance.NewSelector(loadbalance.StrategyWeighted)
+	if err != nil {
+		t.Fatal(err)
+	}
 	// interval=0 不启动后台刷新；直接触发一次同步刷新
-	m := NewEndpointManager(r, NewBalanceAdapter(loadbalance.NewWeighted()), 0)
+	m := NewEndpointManager(r, sel, 0)
 	defer m.Stop()
-	m.refreshEndpoints(context.Background())
+	m.refreshNodes(context.Background())
 
-	req, _ := http.NewRequest(http.MethodGet, "http://x/api", nil)
+	ctx := context.Background()
 	const picks = 2000
 	heavy := 0
 	for i := 0; i < picks; i++ {
-		addr := m.Pick(req)
+		addr, done, err := m.Pick(ctx, "/api")
+		if err != nil {
+			t.Fatalf("Pick: %v", err)
+		}
+		done(ctx, loadbalance.DoneInfo{})
 		switch addr {
 		case "http://10.0.0.1:8080":
 			heavy++
@@ -45,19 +54,24 @@ func TestWeightedResolver_EndpointManagerWeightPropagation(t *testing.T) {
 	}
 }
 
-// TestWeightedResolver_EqualWeightFallbackWithoutWeights 等权回归：
-// resolver 不实现 WeightedResolver（StaticResolver）时保持等权语义。
-func TestWeightedResolver_EqualWeightFallbackWithoutWeights(t *testing.T) {
+// TestStaticResolver_EqualWeightFallback 等权回归：resolver 不实现
+// InstanceResolver（StaticResolver）时保持等权语义。
+func TestStaticResolver_EqualWeightFallback(t *testing.T) {
 	r := NewStaticResolver([]string{"http://10.0.0.1:8080", "http://10.0.0.2:8080"})
-	m := NewEndpointManager(r, NewBalanceAdapter(loadbalance.NewWeighted()), 0)
+	sel, _ := loadbalance.NewSelector(loadbalance.StrategyWeighted)
+	m := NewEndpointManager(r, sel, 0)
 	defer m.Stop()
-	m.refreshEndpoints(context.Background())
+	m.refreshNodes(context.Background())
 
-	req, _ := http.NewRequest(http.MethodGet, "http://x/api", nil)
+	ctx := context.Background()
 	const picks = 2000
 	first := 0
 	for i := 0; i < picks; i++ {
-		if m.Pick(req) == "http://10.0.0.1:8080" {
+		addr, _, err := m.Pick(ctx, "/api")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if addr == "http://10.0.0.1:8080" {
 			first++
 		}
 	}
@@ -67,48 +81,37 @@ func TestWeightedResolver_EqualWeightFallbackWithoutWeights(t *testing.T) {
 	}
 }
 
-// TestLBAdapter_SetWeightsRebuild 钉住 SetWeights 触发实例视图重建：
-// 同一 endpoint 数量下更新权重后，Pick 分布随之变化。
-func TestLBAdapter_SetWeightsRebuild(t *testing.T) {
-	a := &lbAdapter{balancer: loadbalance.NewWeighted()}
-	endpoints := []string{"http://10.0.0.1:8080", "http://10.0.0.2:8080"}
-	req, _ := http.NewRequest(http.MethodGet, "http://x/api", nil)
-
-	const picks = 1000
-	countFirst := func() int {
-		n := 0
-		for i := 0; i < picks; i++ {
-			if a.Pick(endpoints, req) == endpoints[0] {
-				n++
-			}
-		}
-		return n
+// TestNNSResolver_ResolveInstances 验证实例视图的地址与权重映射。
+func TestNNSResolver_ResolveInstances(t *testing.T) {
+	stub := &stubNNSClient{instances: []registry.Instance{
+		{Service: "svc-a", IP: "10.0.0.1", Port: 8080, Weight: 9},
+		{Service: "svc-a", IP: "10.0.0.2", Port: 8080, Weight: 1},
+	}}
+	r := NewNNSResolver("svc-a", stub)
+	got, err := r.ResolveInstances(context.Background())
+	if err != nil {
+		t.Fatalf("ResolveInstances: %v", err)
+	}
+	if len(got) != 2 || got[0].Weight != 9 || got[1].Weight != 1 {
+		t.Fatalf("unexpected instances: %+v", got)
 	}
 
-	// 初始等权：~50%
-	if n := countFirst(); n < 400 || n > 600 {
-		t.Fatalf("expected ~500/1000 for equal weights, got %d", n)
+	nodes := SelectorNodes(got)
+	if nodes[0].Address() != "http://10.0.0.1:8080" || nodes[0].Weight() != 9 {
+		t.Fatalf("SelectorNodes mapping broken: %+v", nodes[0])
 	}
-
-	// 权重大幅倾斜到第一实例（同 endpoint 数量，仅权重变化）
-	a.SetWeights([]float64{1000, 1})
-	if n := countFirst(); n < picks-50 {
-		t.Fatalf("expected near-total traffic on first instance after SetWeights, got %d/%d", n, picks)
+	if nodes[0].ServiceName() != "svc-a" {
+		t.Fatalf("service name mapping broken: %q", nodes[0].ServiceName())
 	}
 }
 
-// TestNNSResolver_ResolveWeighted 验证带权重视图的地址与权重映射。
-func TestNNSResolver_ResolveWeighted(t *testing.T) {
-	stub := &stubNNSClient{instances: []registry.Instance{
-		{IP: "10.0.0.1", Port: 8080, Weight: 9},
-		{IP: "10.0.0.2", Port: 8080, Weight: 1},
-	}}
-	r := NewNNSResolver("svc-a", stub)
-	got, err := r.ResolveWeighted(context.Background())
-	if err != nil {
-		t.Fatalf("ResolveWeighted: %v", err)
+// TestSelectorNodes_MetadataMapping 验证元数据贯通（WithFilter 数据源）。
+func TestSelectorNodes_MetadataMapping(t *testing.T) {
+	insts := []registry.Instance{
+		{Service: "svc", IP: "10.0.0.1", Port: 8080, Weight: 5, Metadata: map[string]string{"cluster": "blue"}},
 	}
-	if len(got) != 2 || got[0].Addr != "http://10.0.0.1:8080" || got[0].Weight != 9 || got[1].Weight != 1 {
-		t.Fatalf("unexpected weighted endpoints: %+v", got)
+	nodes := SelectorNodes(insts)
+	if nodes[0].Metadata()["cluster"] != "blue" {
+		t.Fatalf("metadata not propagated: %+v", nodes[0].Metadata())
 	}
 }

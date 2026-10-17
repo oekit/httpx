@@ -3,9 +3,7 @@ package httpx
 import (
 	"context"
 	"fmt"
-	"hash/crc32"
 	"net"
-	"net/http"
 	"strconv"
 	"sync"
 	"time"
@@ -13,7 +11,7 @@ import (
 	"github.com/oekit/concurrency/async"
 	"github.com/oekit/httpx/loadbalance"
 	"github.com/oekit/logx"
-	"github.com/oekit/registry/registry"
+	"github.com/oekit/registry"
 )
 
 var httpLog = logx.Delegating("httpx")
@@ -24,141 +22,55 @@ type ServiceResolver interface {
 	Resolve(ctx context.Context) ([]string, error)
 }
 
-// WeightedEndpoint 带权重的 endpoint 视图。
-// Weight 为实例注册权重（<=0 由负载均衡策略按 1 处理），0 值在
-// 注册中心未提供权重时与等权语义等价。
-type WeightedEndpoint struct {
-	Addr   string
-	Weight float64
+// InstanceResolver 是 ServiceResolver 的可选增强接口：提供完整实例视图
+// （含权重与元数据）。EndpointManager 检测到 resolver 实现本接口时，
+// 实例的权重与 Metadata 贯通到 Selector（加权策略与 WithFilter 生效）；
+// 仅实现 ServiceResolver 的 resolver 等权合成（权重 1、无元数据）。
+type InstanceResolver interface {
+	// ResolveInstances 解析服务名称，返回实例列表。
+	ResolveInstances(ctx context.Context) ([]registry.Instance, error)
 }
 
-// WeightedResolver 是 ServiceResolver 的可选增强接口：提供带实例权重的
-// endpoint 视图。EndpointManager 检测到 resolver 实现本接口时，会把真实
-// 权重喂给支持权重的负载均衡策略（见 WeightedBalanceStrategy）；
-// 仅实现 ServiceResolver 的 resolver 保持等权语义（历史行为）。
-type WeightedResolver interface {
-	// ResolveWeighted 解析服务名称，返回带权重的 endpoint 列表。
-	ResolveWeighted(ctx context.Context) ([]WeightedEndpoint, error)
+// SelectorNodes 把注册中心实例切片适配为 Selector 节点（字段闭包映射，
+// 地址补 "http://" 前缀，与历史 endpoint 形态一致）。
+func SelectorNodes(insts []registry.Instance) []loadbalance.Node {
+	return loadbalance.NodesFrom(insts,
+		func(i registry.Instance) string { return "http://" + i.Addr() },
+		func(i registry.Instance) float64 { return i.Weight },
+		func(i registry.Instance) map[string]string { return i.Metadata },
+		func(i registry.Instance) string { return i.Service },
+	)
 }
 
-// BalanceStrategy 负载均衡策略接口。
-type BalanceStrategy interface {
-	// Pick 从 endpoints 中选择一个。
-	Pick(endpoints []string, req *http.Request) string
-}
-
-// HashBalance 哈希负载均衡（基于请求路径 CRC32）。
-type HashBalance struct{}
-
-// Pick 基于请求路径 CRC32 哈希选择 endpoint（同一路径总是路由到同一节点）。
-func (b *HashBalance) Pick(endpoints []string, req *http.Request) string {
-	if len(endpoints) == 0 {
-		return ""
-	}
-	if len(endpoints) == 1 {
-		return endpoints[0]
-	}
-	hash := crc32.ChecksumIEEE([]byte(req.URL.Path))
-	return endpoints[int(hash)%len(endpoints)]
-}
-
-// lbAdapter 将 network/loadbalance.Balancer 适配为 httpx.BalanceStrategy。
-// 消除 httpx 中独立实现的 RoundRobin/Random 负载均衡。
-type lbAdapter struct {
-	balancer  loadbalance.Balancer
-	mu        sync.Mutex
-	cached    int                    // 上次缓存的 endpoint 数量
-	dirty     bool                   // 权重更新后置位，下次 Pick 重建实例视图
-	weights   []float64              // 各 endpoint 的注册权重；nil = 等权
-	instances []loadbalance.Instance // 缓存的实例 slice，避免每次 Pick 分配
-}
-
-// NewBalanceAdapter 创建适配器，将 loadbalance.Balancer 包装为 httpx.BalanceStrategy。
-func NewBalanceAdapter(b loadbalance.Balancer) BalanceStrategy {
-	return &lbAdapter{balancer: b}
-}
-
-// SetWeights 更新各 endpoint 的权重（与 endpoints 下标对齐，超出部分按等权 1）。
-// 实现 WeightedBalanceStrategy；EndpointManager 在发现 resolver 提供实例
-// 权重时调用。未调用或传 nil 时保持等权（历史行为）。
-func (a *lbAdapter) SetWeights(weights []float64) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.weights = weights
-	a.dirty = true
-}
-
-func (a *lbAdapter) Pick(endpoints []string, req *http.Request) string {
-	if len(endpoints) == 0 {
-		return ""
-	}
-	if len(endpoints) == 1 {
-		return endpoints[0]
-	}
-	// 复用缓存的实例 slice，避免每次 Pick 分配新 slice；
-	// endpoint 数量或权重变化时重建
-	a.mu.Lock()
-	if a.cached != len(endpoints) || a.dirty {
-		a.instances = make([]loadbalance.Instance, len(endpoints))
-		for i := range a.instances {
-			w := 1.0
-			if i < len(a.weights) {
-				w = a.weights[i]
-			}
-			a.instances[i] = strInstance(w)
-		}
-		a.cached = len(endpoints)
-		a.dirty = false
-	}
-	instances := a.instances
-	a.mu.Unlock()
-
-	idx, err := a.balancer.Pick(instances)
-	if err != nil || idx < 0 || idx >= len(endpoints) {
-		return endpoints[0]
-	}
-	return endpoints[idx]
-}
-
-// WeightedBalanceStrategy 是 BalanceStrategy 的可选增强接口：
-// 接受实例权重分布的策略。仅对经 NewBalanceAdapter 适配
-// network/loadbalance.Balancer 的策略生效；自定义 BalanceStrategy
-// 实现不感知权重（等权语义）。
-type WeightedBalanceStrategy interface {
-	BalanceStrategy
-	SetWeights(weights []float64)
-}
-
-// strInstance 实现 loadbalance.Instance 接口，用于字符串 endpoint 列表。
-// 浮点数值即权重（默认 1 = 等权）。
-type strInstance float64
-
-func (s strInstance) GetWeight() float64 { return float64(s) }
-
-// EndpointManager endpoint 管理器。
-// 支持静态配置、动态刷新、缓存降级。
+// EndpointManager endpoint 管理器：动态刷新节点快照 + 缓存降级，
+// 选择经 loadbalance.Selector 完成。
 type EndpointManager struct {
-	resolver        ServiceResolver
-	balance         BalanceStrategy
-	endpoints       []string
-	cachedEndpoints []string
-	mu              sync.RWMutex
-	refreshTicker   *time.Ticker
-	stopRefresh     chan struct{}
-	stopOnce        sync.Once
-	cancel          context.CancelFunc
+	resolver      ServiceResolver
+	selector      loadbalance.Selector
+	nodes         []loadbalance.Node
+	cachedNodes   []loadbalance.Node
+	mu            sync.RWMutex
+	refreshTicker *time.Ticker
+	stopRefresh   chan struct{}
+	stopOnce      sync.Once
+	cancel        context.CancelFunc
 }
 
 // NewEndpointManager 创建 endpoint 管理器。
-func NewEndpointManager(resolver ServiceResolver, balance BalanceStrategy, refreshInterval time.Duration) *EndpointManager {
+// selector 为 nil 时回退 roundrobin；refreshInterval > 0 且 resolver 非空时
+// 启动刷新循环。
+func NewEndpointManager(resolver ServiceResolver, selector loadbalance.Selector, refreshInterval time.Duration) *EndpointManager {
+	if selector == nil {
+		var err error
+		selector, err = loadbalance.NewSelector("")
+		if err != nil {
+			panic("httpx: default selector creation failed: " + err.Error())
+		}
+	}
 	m := &EndpointManager{
 		resolver:    resolver,
-		balance:     balance,
+		selector:    selector,
 		stopRefresh: make(chan struct{}),
-	}
-
-	if balance == nil {
-		m.balance = NewBalanceAdapter(loadbalance.NewRoundRobin())
 	}
 
 	// 启动动态刷新
@@ -177,102 +89,105 @@ func NewEndpointManager(resolver ServiceResolver, balance BalanceStrategy, refre
 // refreshLoop 刷新循环。
 func (m *EndpointManager) refreshLoop(ctx context.Context) {
 	// 立即刷新一次
-	m.refreshEndpoints(ctx)
+	m.refreshNodes(ctx)
 
 	for {
 		select {
 		case <-m.stopRefresh:
 			return
 		case <-m.refreshTicker.C:
-			m.refreshEndpoints(ctx)
+			m.refreshNodes(ctx)
 		}
 	}
 }
 
-// refreshEndpoints 刷新 endpoint 列表。
-//
-// resolver 实现 WeightedResolver 时走带权路径：真实实例权重贯通到
-// 支持权重的负载均衡策略（WeightedBalanceStrategy），注册中心的权重
-// 配置得以在 httpx 路径生效；否则保持等权（历史行为）。
-func (m *EndpointManager) refreshEndpoints(ctx context.Context) {
+// refreshNodes 刷新节点快照：优先走实例视图（权重/元数据贯通），
+// 否则字符串端点等权合成；失败时保留现有快照（缓存降级）。
+func (m *EndpointManager) refreshNodes(ctx context.Context) {
 	if m.resolver == nil {
 		return
 	}
 
-	var endpoints []string
-	var weights []float64
-	if wr, ok := m.resolver.(WeightedResolver); ok {
-		weighted, err := wr.ResolveWeighted(ctx)
+	var nodes []loadbalance.Node
+	if ir, ok := m.resolver.(InstanceResolver); ok {
+		insts, err := ir.ResolveInstances(ctx)
 		if err != nil {
-			httpLog.Warn("refresh endpoints failed, using cached", "err", err)
+			httpLog.Warn("refresh instances failed, using cached", "err", err)
 			return
 		}
-		if len(weighted) == 0 {
-			httpLog.Warn("refresh endpoints returned empty list, using cached")
+		if len(insts) == 0 {
+			httpLog.Warn("refresh instances returned empty list, using cached")
 			return
 		}
-		endpoints = make([]string, len(weighted))
-		weights = make([]float64, len(weighted))
-		for i, we := range weighted {
-			endpoints[i] = we.Addr
-			weights[i] = we.Weight
-		}
+		nodes = SelectorNodes(insts)
 	} else {
-		var err error
-		endpoints, err = m.resolver.Resolve(ctx)
+		endpoints, err := m.resolver.Resolve(ctx)
 		if err != nil {
 			httpLog.Warn("refresh endpoints failed, using cached", "err", err)
-			return // 使用缓存的 endpoint 列表
+			return
 		}
 		if len(endpoints) == 0 {
 			httpLog.Warn("refresh endpoints returned empty list, using cached")
 			return
 		}
+		nodes = NodesFromEndpoints(endpoints)
 	}
 
 	m.mu.Lock()
-	m.endpoints = endpoints
-	m.cachedEndpoints = endpoints // 更新缓存
+	m.nodes = nodes
+	m.cachedNodes = nodes
 	m.mu.Unlock()
 
-	// 权重仅喂给支持权重的策略；自定义 BalanceStrategy 不感知（等权）
-	if weights != nil {
-		if ws, ok := m.balance.(WeightedBalanceStrategy); ok {
-			ws.SetWeights(weights)
-		} else {
-			httpLog.Debug("resolver provides weights but balance strategy is not weight-aware, ignoring")
-		}
-	}
-
-	httpLog.Debug("refreshed endpoints", "endpoints", endpoints)
+	httpLog.Debug("refreshed nodes", "count", len(nodes))
 }
 
-// GetEndpoints 获取 endpoint 列表（优先使用最新，降级使用缓存）。
-func (m *EndpointManager) GetEndpoints() []string {
+// NodesFromEndpoints 把字符串端点列表合成为等权节点（权重 1、无元数据）。
+func NodesFromEndpoints(endpoints []string) []loadbalance.Node {
+	return loadbalance.NodesFrom(endpoints,
+		func(s string) string { return s },
+		func(string) float64 { return 1 },
+		nil,
+		nil,
+	)
+}
+
+// GetNodes 获取节点快照（优先最新，降级缓存）。
+func (m *EndpointManager) GetNodes() []loadbalance.Node {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	if len(m.endpoints) > 0 {
-		return m.endpoints
+	if len(m.nodes) > 0 {
+		return m.nodes
 	}
-	return m.cachedEndpoints
+	return m.cachedNodes
 }
 
-// SetEndpoints 设置静态 endpoint 列表。
+// SetEndpoints 设置静态端点列表（等权合成，停止动态刷新语义不变）。
 func (m *EndpointManager) SetEndpoints(endpoints []string) {
+	m.SetNodes(NodesFromEndpoints(endpoints))
+}
+
+// SetNodes 直接设置节点快照。
+func (m *EndpointManager) SetNodes(nodes []loadbalance.Node) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.endpoints = endpoints
-	m.cachedEndpoints = endpoints
+	m.nodes = nodes
+	m.cachedNodes = nodes
 }
 
-// Pick 选择一个 endpoint。
-func (m *EndpointManager) Pick(req *http.Request) string {
-	endpoints := m.GetEndpoints()
-	if len(endpoints) == 0 {
-		return ""
+// Pick 选择一个节点地址，返回地址与结果回写句柄（调用结束后以最终
+// 错误调用 done；done 为 nil 表示无需回写）。
+// key 用于一致性选点类 Selector（httpx 以请求 PATH 为默认键）。
+func (m *EndpointManager) Pick(ctx context.Context, key string) (string, loadbalance.DoneFunc, error) {
+	nodes := m.GetNodes()
+	if len(nodes) == 0 {
+		return "", nil, loadbalance.ErrNoAvailable
 	}
-	return m.balance.Pick(endpoints, req)
+	n, done, err := m.selector.Select(ctx, nodes, loadbalance.WithKey(key))
+	if err != nil {
+		return "", nil, err
+	}
+	return n.Address(), done, nil
 }
 
 // Stop 停止刷新。
@@ -293,7 +208,7 @@ type NNSClient interface {
 	GetInstances(ctx context.Context, serviceName string) ([]registry.Instance, error)
 }
 
-// NNSResolver NNS 服务发现解析器。
+// NNSResolver NNS 服务发现解析器（实现 ServiceResolver 与 InstanceResolver）。
 type NNSResolver struct {
 	serviceName string
 	nnsClient   NNSClient
@@ -307,39 +222,28 @@ func NewNNSResolver(serviceName string, nnsClient NNSClient) *NNSResolver {
 	}
 }
 
-// ResolveWeighted 解析服务名称，返回带实例权重的 endpoint 列表。
-// 权重来自注册中心（registry.Instance.Weight），使加权 LB 策略在
-// httpx 路径上生效；透传 context 到 NNS，保留超时和 trace_id 语义。
-func (r *NNSResolver) ResolveWeighted(ctx context.Context) ([]WeightedEndpoint, error) {
+// ResolveInstances 解析服务名称，返回实例列表（地址合成 "http://ip:port"）。
+// 透传 context 到 NNS，保留超时和 trace_id 语义。
+func (r *NNSResolver) ResolveInstances(ctx context.Context) ([]registry.Instance, error) {
 	instances, err := r.nnsClient.GetInstances(ctx, r.serviceName)
 	if err != nil {
 		return nil, fmt.Errorf("nns resolve %s: %w", r.serviceName, err)
 	}
-
-	endpoints := make([]WeightedEndpoint, 0, len(instances))
-	for _, inst := range instances {
-		endpoints = append(endpoints, WeightedEndpoint{
-			Addr:   "http://" + net.JoinHostPort(inst.IP, strconv.Itoa(inst.Port)),
-			Weight: inst.Weight,
-		})
-	}
-
-	if len(endpoints) == 0 {
+	if len(instances) == 0 {
 		return nil, fmt.Errorf("nns resolve %s: no instances available", r.serviceName)
 	}
-
-	return endpoints, nil
+	return instances, nil
 }
 
-// Resolve 解析服务名称，返回可用的 endpoint 列表（丢弃权重）。
+// Resolve 解析服务名称，返回地址列表（丢弃权重与元数据）。
 func (r *NNSResolver) Resolve(ctx context.Context) ([]string, error) {
-	weighted, err := r.ResolveWeighted(ctx)
+	instances, err := r.ResolveInstances(ctx)
 	if err != nil {
 		return nil, err
 	}
-	endpoints := make([]string, len(weighted))
-	for i, we := range weighted {
-		endpoints[i] = we.Addr
+	endpoints := make([]string, len(instances))
+	for i, inst := range instances {
+		endpoints[i] = "http://" + net.JoinHostPort(inst.IP, strconv.Itoa(inst.Port))
 	}
 	return endpoints, nil
 }
