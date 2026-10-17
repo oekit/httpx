@@ -2,6 +2,8 @@
 
 所有 notable 变更记录如下。格式参考 [Keep a Changelog](https://keepachangelog.com/)。
 
+## [- fix(deps): logx 地板 v0.5.0 → v0.6.0、core 地板 v0.6.0 → v0.7.0、registry 地板 v0.4.0 → v0.4.1（零代码改动）
+
 ## [v0.4.0] — 2026-10-17
 
 ### Breaking（go-kratos 对齐：负载均衡全量切换 Selector，无兼容路径）
