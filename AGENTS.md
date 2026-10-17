@@ -1,10 +1,10 @@
 # AGENTS.md — oekit/httpx
 
-> Hertz Client 高层封装——服务发现/熔断/指数退避重试/弹性指标/OTel 透传/一致性哈希 + loadbalance
-> 当前版本：`v0.3.0` · module：`github.com/oekit/httpx` · org：[oekit = Open Easy Kit](https://oekit.github.io)
+> HTTP 客户端 + 负载均衡——服务发现/熔断（规范哨兵 ErrCircuitOpen）/重试/指标/OTel 透传/一致性哈希（权重感知虚拟副本）
+> 当前版本：`v0.3.1` · module：`github.com/oekit/httpx` · org：[oekit = Open Easy Kit](https://oekit.github.io)
 
 ## 本仓包含
-根包（httpx，import `github.com/oekit/httpx`）+ `loadbalance/`
+`./`、`loadbalance/`
 
 ## 硬规则速览（全矩阵适用）
 
