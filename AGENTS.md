@@ -1,16 +1,17 @@
 # AGENTS.md — oekit/httpx
 
-> HTTP 客户端 + 负载均衡——服务发现/熔断（规范哨兵 ErrCircuitOpen）/重试/指标/OTel 透传/一致性哈希（权重感知虚拟副本）
-> 当前版本：`v0.6.0` · module：`github.com/oekit/httpx` · org：[oekit = Open Easy Kit](https://oekit.github.io)
+> HTTP 客户端 + 负载均衡——服务发现/熔断（规范哨兵 ErrCircuitOpen）/重试/指标/OTel 透传；loadbalance Selector 形态（RoundRobin/Random/Weighted/一致性哈希权重感知虚拟副本/p2c 自适应——EWMA 经 DoneFunc 回写建立、Err 计 1s 惩罚；WithFilter 按元数据过滤；v0.4.0 起 Balancer 全家族删除无兼容路径）；codec 注册制编解码器（json 内置 + form 表单，DoCodec 请求按 codec 序列化、响应按 Content-Type 反查回退请求 codec）；v0.6.0 起 net/http 桥接层 NewRoundTripper/StdClient——存量标准库外呼一行 Transport 接入熔断/重试/指标/链路（重试缺省关显式开、非 2xx 非错误、hop-by-hop 隔离，#8）
+> 当前版本：`v0.6.1` · module：`github.com/oekit/httpx` · org：[oekit = Open Easy Kit](https://oekit.github.io)
 
 ## 本仓包含
-`./`、`loadbalance/`
+`./`、`codec/`、`loadbalance/`
 
 ## 硬规则速览（全矩阵适用）
 
 ### 分层与依赖
 - 依赖严格自底向上，禁止反向依赖；本仓的矩阵内依赖见 README「矩阵总览」表
 - 微工具集统一在 `github.com/oekit/pkg`；本仓新增基础工具前先确认 pkg 里没有
+- `pkg` 是**零第三方依赖仓**（go.mod 零 require，仅标准库，CI 强制）——需要三方能力的基础工具拆独立仓（先例：kitx）
 
 ### 错误处理
 - 一律使用 `github.com/oekit/pkg/errors`：`errors.Wrap(err, "ctx", kv...)`（nil-safe）、
@@ -31,7 +32,7 @@
 
 ### 生命周期
 - 组件 Close 统一 `Close(ctx) error` 签名 + sync.Once 幂等
-- 应用骨架用 `github.com/oekit/bootstrap（New + Run(fn)，v0.4.0 起无 Run(Config)）`；**userFn 返回即服务结束，
+- 应用骨架用 `github.com/oekit/bootstrap/bootstrap.Run`；**userFn 返回即服务结束，
   长驻服务必须 `<-app.Context().Done()` 阻塞**
 
 ### Option 与命名
@@ -39,7 +40,13 @@
 - 导出符号 PascalCase + godoc 注释；包文档放 doc.go
 
 ### 版本与发版
-- SemVer；0.x 阶段 minor 允许 breaking；发版 = 打 annotated tag 推远端（CI 自动跑 lint+test）
+- SemVer；0.x 阶段 minor 允许 breaking
+- **main 受分支保护，改动一律走 PR，管理员也不例外**（`enforce_admins=true`，
+  直推会被 `GH006 Changes must be made through a pull request` 拒掉）
+- 发版流程：建分支 → 提交 → 开 PR → CI（`Lint & Test / Lint` + `Lint & Test / Test`）
+  绿 → 合入 main → **合入之后**再打 annotated tag 推远端
+- tag 不走 PR（`protect-release-tags` ruleset 管的是不可删/不可改，不是审批）；
+  tag 必须落在已合入 main 的 commit 上，否则 `go get` 拉到的是没进过 CI 的代码
 - module 路径 = `github.com/oekit/<name>`；**改 module 路径必须同步**：
   全部 import、go.mod、README 安装行、logx caller 启发式（若涉及 logx）
 
