@@ -1,6 +1,16 @@
-# Changelog — oekit/httpx
+## [v0.6.0] — 2026-10-18
 
-所有 notable 变更记录如下。格式参考 [Keep a Changelog](https://keepachangelog.com/)。
+### feat：net/http 桥接层 `NewRoundTripper`/`StdClient`（[#8](https://github.com/oekit/httpx/issues/8)）
+- 把熔断/重试/指标/链路透传装进标准库 `http.Client{Transport: httpx.NewRoundTripper(...)}`——
+  存量 net/http 外呼（OAuth token 交换、webhook、RSS 抓取等低 QPS 控制面调用）只改一行
+  Transport 即接入「纪律单源」，无需迁移 protocol.Request 体系
+- 语义：目标寻址随 Client（Endpoints/NNS 模式忽略 http.Request host；BaseURL 模式同）；
+  请求体/响应体全量缓冲（面向低 QPS 控制面，非流式）；**非 2xx 不是错误**（标准库语义，
+  调用方判 StatusCode）；熔断拒绝透出裸 `ErrCircuitOpen`（errors.Is）；hop-by-hop 头与
+  Host/Content-Length 不透传，其余头全量透传/回填；**重试缺省关、`WithRetryConfig`
+  显式开**（防 OAuth POST 等非幂等重放；`WithRetryIfFunc` 可收紧）
+- `StdClient(service, opts...)` 直接返回装好的 `*http.Client`（Timeout 留零，
+  超时边界由 httpx 层管理）
 
 ## [v0.5.0] — 2026-10-18
 

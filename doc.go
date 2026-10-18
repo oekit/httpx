@@ -11,6 +11,8 @@
 //   - OpenTelemetry 追踪
 //   - 文件上传（multipart/form-data）
 //   - DoDetail：status + 原始 body（2xx 也返回）
+//   - net/http 桥接层：NewRoundTripper/StdClient——存量标准库调用方一行
+//     Transport 即接入熔断/重试/指标/链路（重试缺省关、显式开）
 //   - WithDialFunc/WithHertzOption：拨号层拦截与 Hertz 原生选项透传（SSRF 防护）
 //
 // # 快速接入
