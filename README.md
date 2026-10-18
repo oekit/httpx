@@ -8,7 +8,7 @@
 ## 安装
 
 ```bash
-go get github.com/oekit/httpx@v0.6.1
+go get github.com/oekit/httpx@v0.8.0
 ```
 
 ## 这个仓库做什么
@@ -45,27 +45,39 @@ status, body, err := c.DoDetail(ctx, http.MethodPost, "/api/v1/pay", req)
 // 非 2xx: status、body 仍有值，err 为 *ServiceError
 ```
 
-## 出站 SSRF 防护套路
+## 出站 SSRF 防护
 
 调用方 URL 来自不受信输入时（用户配置的回调/推送地址、任意外链抓取、
-开放平台跳转等），需要两层防线。**直接用 `urlguard`，不必再手搓：**
-
-1. **URL 层字面量检查**（请求前）：`urlguard.IsBlockedURL(raw)`——拒绝非
-   http(s) scheme、字面量内网 IP、`.local`/`.internal` 等内部主机名。
-2. **拨号层解析后 IP 检查**（建连时）：`WithSafeDial()` 或
-   `WithDialFunc(SafeDialFunc(next))`——建连前解析并校验全部 IP，挡住
-   DNS rebinding。
+开放平台跳转等），用 [pkg/urlguard](https://github.com/oekit/pkg/tree/main/urlguard)
+原语 + 本仓胶水，一行接入：
 
 ```go
-c := httpx.NewClient("user-callback",
-    httpx.WithSafeDial(), // 拨号层防护
+import (
+    "github.com/oekit/httpx"
+    pkgurlguard "github.com/oekit/pkg/urlguard"
 )
-if err := urlguard.IsBlockedURL(userURL); err != nil {
-    return err // URL 层拒绝
+
+// URL 层字面量校验（请求前）：私网/loopback/云元数据段、.internal/.local 域名、非 http(s) scheme
+if err := pkgurlguard.IsBlockedURL(callbackURL); err != nil {
+    return err
 }
+
+// 拨号层（建连时）：解析 IP 预检 + 实际端点核对（闭合 DNS rebinding 的重解析窗口，
+// Happy-Eyeballs 胜出路径同样被核对）
+c := httpx.NewClient("user-callback", httpx.WithSafeDial())
 ```
 
-测试打本机 mock 时：`urlguard.SetAllowPrivateForTest(true)`（用完复位）。
+豁免走构造态 option（无进程级全局开关）：测试打本机 mock 用
+`httpx.WithSafeDial(pkgurlguard.WithAllowPrivate())`；内网 webhook 端点豁免
+`WithSafeDial(pkgurlguard.WithAllowCIDRs("10.20.0.0/16"))`；域名豁免
+`WithAllowDomains`。判定规则（阻断网段清单、IPv4-mapped IPv6 归一等）见
+[pkg/urlguard](https://github.com/oekit/pkg/tree/main/urlguard)。
+
+> v0.7.0 曾内置独立实现 `httpx/urlguard`（`IsBlockedIP`/`GuardAddr`/
+> `SetAllowPrivateForTest` 全局开关），与 pkg v0.15.0 重叠，v0.8.0 起收敛删除：
+> 判定规则单源在 pkg，本仓只保留 hertz `network.DialFunc` 形态的胶水
+> （`SafeDialFunc` / `SafeDialFuncWith` / `WithSafeDial`）。
+
 尚未封装的 Hertz 原生能力用 `WithHertzOption(opts ...config.ClientOption)` 逃生舱透传。
 
 ## 边界

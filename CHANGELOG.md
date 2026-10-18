@@ -1,3 +1,21 @@
+## [v0.8.0] — 2026-10-19
+
+### refactor(urlguard)!: SSRF 防护收敛到 pkg/urlguard 单一事实源（[httpx#11](https://github.com/oekit/httpx/issues/11)）
+- **breaking(包删除)**：移除 v0.7.0 内置的 `httpx/urlguard` 独立实现
+  （`IsBlockedIP`/`IsBlockedHost`/`IsBlockedURL`/`GuardAddr`/`GuardAddrContext`/
+  `SafeDialer`/`SetAllowPrivateForTest`）——与 pkg v0.15.0 的 `pkg/urlguard` 重叠，
+  两套同名原语在矩阵内各自漂移不可接受。迁移：`urlguard.IsBlockedURL` →
+  `pkgurlguard.IsBlockedURL`（pkg v0.15.0，同名单独 import）；
+  `SetAllowPrivateForTest(true)` → 构造态 `WithSafeDial(pkgurlguard.WithAllowPrivate())`
+  （进程级全局开关移除，与矩阵注入风格一致）
+- **`SafeDialFunc` / `SafeDialFuncWith(opts, next)` / `WithSafeDial(opts...)` 胶水保留**
+  （hertz `network.DialFunc` 形态，core/chainmw「内核单点、薄壳按框架」模式），
+  实现改基于 pkg Guard，并**新增端点核对**：拨号前解析 IP 全量预检 + 建连后核对实际
+  RemoteAddr、违规关连接——v0.7.0 的「钉住已验证 IP 直接拨号」会在 TLS SNI 场景把
+  addr 换成 IP（证书校验风险），端点核对以同一保障覆盖重解析窗口且不改拨号语义
+- `WithSafeDial` 变参扩展（`opts ...pkgurlguard.Option`），无参调用向后兼容
+- pkg 地板 v0.11.0 → **v0.15.0**（urlguard 原语所在版本）
+
 ## [v0.7.0] — 2026-10-18
 
 ### Added
