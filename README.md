@@ -45,38 +45,34 @@ status, body, err := c.DoDetail(ctx, http.MethodPost, "/api/v1/pay", req)
 // 非 2xx: status、body 仍有值，err 为 *ServiceError
 ```
 
-## 出站 SSRF 防护套路
+## 出站 SSRF 防护
 
 调用方 URL 来自不受信输入时（用户配置的回调/推送地址、任意外链抓取、
-开放平台跳转等），需要两层防线：
-
-1. **URL 层字面量检查**（请求前）：拒绝非 http(s) scheme、字面量内网 IP
-   （127.0.0.0/8、10.0.0.0/8、172.16.0.0/12、192.168.0.0/16、169.254.0.0/16、
-   ::1、fc00::/7 等）、`.local`/`.internal` 等内部主机名。
-2. **拨号层解析后 IP 检查**（建连时）：`WithDialFunc` 在真正建立 TCP 连接前
-   校验目标解析出的 IP——字面量检查通过的域名仍可能解析到内网（DNS rebinding：
-   第一次解析公网、第二次解析 127.0.0.1），必须以**建连瞬间**的解析结果为准。
+开放平台跳转等），用 [pkg/urlguard](https://github.com/oekit/pkg/tree/main/urlguard)
+（pkg v0.15.0 起）——两层防护已是库内原语，一行接入，不再手搓：
 
 ```go
+import "github.com/oekit/pkg/urlguard"
+
+g, err := urlguard.New() // 测试打本机 mock：urlguard.New(urlguard.WithAllowPrivate())
+if err != nil {
+    return err
+}
+if err := g.CheckURL(callbackURL); err != nil { // 层 1：URL 字面量校验
+    return err // 私网/loopback/云元数据段、.internal/.local 域名、非 http(s) scheme
+}
+
 c := httpx.NewClient("user-callback",
-    httpx.WithDialFunc(func(addr string) (network.Conn, error) {
-        host, _, err := net.SplitHostPort(addr)
-        if err != nil {
-            return nil, err
-        }
-        ips, err := net.LookupIP(host) // 以本次解析结果为准
-        if err != nil {
-            return nil, err
-        }
-        for _, ip := range ips {
-            if isBlockedIP(ip) { // 内网/黑名单判定
-                return nil, fmt.Errorf("ssrf guard: blocked ip %s", ip)
-            }
-        }
-        return dialer.DialConnection(context.Background(), network.TCP, addr)
-    }),
+    httpx.WithDialFunc(g.DialFunc(nil)), // 层 2：解析 IP 预检 + 实际端点核对（闭合 TOCTOU）
 )
 ```
+
+覆盖范围：私网/loopback/链路本地（含云元数据 169.254.169.254）/CGNAT/ULA/组播保留、
+`.internal`/`.local`/`localhost` 域名、IPv4-mapped IPv6 归一；豁免走构造态
+`WithAllowPrivate` / `WithAllowCIDRs` / `WithAllowDomains`（无进程级全局开关）。
+此前文档里的手搓写法（自行 LookupIP + isBlockedIP）有两个已知缺口：
+预检与建连之间仍存在重解析窗口（urlguard 以实际 RemoteAddr 端点核对闭合）、
+Happy-Eyeballs 双栈竞争路径未覆盖（同上，胜出端点被核对）——请迁移到原语。
 
 尚未封装的 Hertz 原生能力用 `WithHertzOption(opts ...config.ClientOption)` 逃生舱透传。
 
