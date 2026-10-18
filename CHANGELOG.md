@@ -6,9 +6,14 @@
 
 - feat(loadbalance): `p2c` 策略（#6）——Power of Two Choices 自适应选择：随机取两候选选 EWMA 调用时长低者，EWMA 经 DoneFunc 回写建立（Err 计 1s 惩罚）；流量自动从慢/故障节点撬走，为 EWMA/P2C 类算法补齐数据闭环
 - feat(codec): `form` 编解码器（#7）——application/x-www-form-urlencoded（stdlib 反射，flat-only；`form:"..."` 键名、`form:"-"` 跳过、slice 重复键）；protobuf 维持挂起（依赖树 + schema 形态不合通用 codec，见 #7 评论）
-- fix(deps): metrics vv0.1.7、tracing vv0.2.2 地板对齐（零代码改动）
 
-## [- fix(deps): logx 地板 v0.5.0 → v0.6.0、core 地板 v0.6.0 → v0.7.0、registry 地板 v0.4.0 → v0.4.1（零代码改动）
+## [v0.4.2] — 2026-10-18
+
+- fix(deps): metrics v0.1.7、tracing v0.2.2 地板对齐（零代码改动）
+
+## [v0.4.1] — 2026-10-18
+
+- fix(deps): logx 地板 v0.5.0 → v0.6.0、core 地板 v0.6.0 → v0.7.0、registry 地板 v0.4.0 → v0.4.1（零代码改动）
 
 ## [v0.4.0] — 2026-10-17
 
