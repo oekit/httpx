@@ -186,3 +186,32 @@ func TestStdClient(t *testing.T) {
 		t.Fatalf("body = %q, want hello", body)
 	}
 }
+
+// TestRoundTripper_ExplicitPort 无端点/baseURL 配置时，目标取 http.Request 自身的
+// scheme://host——显式端口（httptest 随机端口）原样进入拨号，不落默认 80（#9）。
+func TestRoundTripper_ExplicitPort(t *testing.T) {
+	var mu sync.Mutex
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		gotPath = r.URL.RequestURI()
+		mu.Unlock()
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	// 不带任何寻址选项：桥接必须按标准 RoundTripper 语义使用请求自身的 URL
+	client := StdClient("bridge-port")
+	resp, err := client.Post(srv.URL+"/token?grant=cc", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("request to %s err = %v (port must not be dropped)", srv.URL, err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	mu.Lock()
+	got := gotPath
+	mu.Unlock()
+	if string(body) != "ok" || got != "/token?grant=cc" {
+		t.Fatalf("body=%q path=%q, want ok /token?grant=cc", body, got)
+	}
+}

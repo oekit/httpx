@@ -1,3 +1,12 @@
+## [v0.6.1] — 2026-10-18
+
+### fix(roundtripper)：非默认端口丢失（[#9](https://github.com/oekit/httpx/issues/9)）
+- Client 未配置端点/baseURL 时，桥接解析结果只是 path?query（无 scheme://host）——
+  旧版直接拨号导致 http.Request 的 host:port 全部丢失、非 80 端点落默认 80；
+  现按标准 RoundTripper 语义回退用请求自身的 scheme://host 寻址（显式端口原样保留）
+- baseURL/Endpoints/NNS 模式不受影响（解析结果自带 scheme）；回归测试用
+  httptest 随机端口复现 issue 现场（无任何寻址选项的 StdClient）
+
 ## [v0.6.0] — 2026-10-18
 
 ### feat：net/http 桥接层 `NewRoundTripper`/`StdClient`（[#8](https://github.com/oekit/httpx/issues/8)）

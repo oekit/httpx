@@ -84,6 +84,17 @@ func (rt *roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 
 	fullURL, lbDone := c.resolveEndpoint(ctx, req.URL.RequestURI())
+	// 标准 RoundTripper 语义（#9）：Client 未配置端点/baseURL 时，解析结果只是
+	// path?query（无 scheme://host），目标 = http.Request 自身的 scheme://host
+	// ——显式端口必须原样进入拨号寻址（旧版在此丢失 host:port，非 80/443 端点
+	// 全部落默认 80）。baseURL/Endpoints/NNS 模式的解析结果自带 scheme，不受影响
+	if !strings.Contains(fullURL, "://") && req.URL.Host != "" {
+		scheme := req.URL.Scheme
+		if scheme == "" {
+			scheme = "http"
+		}
+		fullURL = scheme + "://" + req.URL.Host + fullURL
+	}
 
 	hreq, hresp := protocol.AcquireRequest(), protocol.AcquireResponse()
 	defer protocol.ReleaseRequest(hreq)
