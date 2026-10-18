@@ -155,10 +155,13 @@ func TestRoundTripper_CircuitBreakerOpen(t *testing.T) {
 	if executed.Load() != 1 {
 		t.Fatalf("executed = %d, want 1", executed.Load())
 	}
-	// 第二次：熔断打开，拒绝且不执行（resp 为 nil）
-	_, secondErr := rt.RoundTrip(newReq())
+	// 第二次：熔断打开，拒绝且不执行（resp 可能为 nil，拿到就关闭）
+	respSecond, secondErr := rt.RoundTrip(newReq())
 	if !errors.Is(secondErr, ErrCircuitOpen) {
 		t.Fatalf("second request err = %v, want ErrCircuitOpen", secondErr)
+	}
+	if respSecond != nil {
+		respSecond.Body.Close()
 	}
 	if executed.Load() != 1 {
 		t.Fatalf("rejected request must not execute, executed = %d", executed.Load())
