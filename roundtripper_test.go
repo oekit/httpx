@@ -107,9 +107,11 @@ func TestRoundTripper_HopByHopSkipped(t *testing.T) {
 	req.Header.Set("Transfer-Encoding", "chunked")
 	req.Header.Add("X-Multi", "a")
 	req.Header.Add("X-Multi", "b")
-	if _, err := rt.RoundTrip(req); err != nil {
+	respHop, err := rt.RoundTrip(req)
+	if err != nil {
 		t.Fatalf("RoundTrip err = %v", err)
 	}
+	respHop.Body.Close()
 	mu.Lock()
 	conn, te, multi := gotConn, gotTE, gotHeaderCount
 	mu.Unlock()
@@ -141,19 +143,22 @@ func TestRoundTripper_CircuitBreakerOpen(t *testing.T) {
 		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL+"/", nil)
 		return req
 	}
-	// 第一次：执行并失败（500），熔断计数达到阈值切 open
+	// 第一次：执行并失败（500），熔断计数达到阈值切 open（失败路径 resp 可能为 nil，
+	// 拿得到就关闭）
 	respFirst, firstErr := rt.RoundTrip(newReq())
 	if firstErr == nil {
 		t.Fatal("first request must fail (server 500)")
 	}
-	_ = respFirst
+	if respFirst != nil {
+		respFirst.Body.Close()
+	}
 	if executed.Load() != 1 {
 		t.Fatalf("executed = %d, want 1", executed.Load())
 	}
-	// 第二次：熔断打开，拒绝且不执行
-	_, err := rt.RoundTrip(newReq())
-	if !errors.Is(err, ErrCircuitOpen) {
-		t.Fatalf("second request err = %v, want ErrCircuitOpen", err)
+	// 第二次：熔断打开，拒绝且不执行（resp 为 nil）
+	_, secondErr := rt.RoundTrip(newReq())
+	if !errors.Is(secondErr, ErrCircuitOpen) {
+		t.Fatalf("second request err = %v, want ErrCircuitOpen", secondErr)
 	}
 	if executed.Load() != 1 {
 		t.Fatalf("rejected request must not execute, executed = %d", executed.Load())
