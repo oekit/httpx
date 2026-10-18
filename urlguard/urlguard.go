@@ -139,7 +139,7 @@ func GuardAddrContext(ctx context.Context, addr string) (string, error) {
 	}
 	var first netip.Addr
 	for _, ip := range ips {
-		a, ok := netip.AddrFromSlice(ip.IPAddr().IP)
+		a, ok := netip.AddrFromSlice(ip.IP)
 		if !ok {
 			return "", fmt.Errorf("urlguard: resolve %q: bad IP", host)
 		}
