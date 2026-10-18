@@ -1,3 +1,12 @@
+## [v0.7.0] — 2026-10-18
+
+### Added
+- `urlguard` 子包：出站 SSRF 防护原语（[#11](https://github.com/oekit/httpx/issues/11)）
+  - `IsBlockedURL` / `IsBlockedHost` / `IsBlockedIP`：URL/host 字面量校验（loopback、私网、链路本地、IPv4-mapped IPv6、`.internal`/`.local` 等）
+  - `GuardAddr` / `SafeDialer`：拨号前解析并校验全部 IP（DNS rebinding）
+  - `SetAllowPrivateForTest`：测试环境放行开关
+- `SafeDialFunc(next)` / `WithSafeDial()`：与 `WithDialFunc` 一行组合的拨号层防护
+
 ## [v0.6.1] — 2026-10-18
 
 ### fix(roundtripper)：非默认端口丢失（[#9](https://github.com/oekit/httpx/issues/9)）
