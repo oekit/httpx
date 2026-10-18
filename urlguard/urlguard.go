@@ -1,6 +1,7 @@
 package urlguard
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/netip"
@@ -116,6 +117,11 @@ func IsBlockedURL(raw string) error {
 // 网段即拒绝。返回校验后的第一个地址（ip:port），供下游拨号，缩小 DNS
 // rebinding 窗口。测试放行时跳过解析，原样返回。
 func GuardAddr(addr string) (string, error) {
+	return GuardAddrContext(context.Background(), addr)
+}
+
+// GuardAddrContext 同 GuardAddr，但解析走可取消的 ctx。
+func GuardAddrContext(ctx context.Context, addr string) (string, error) {
 	host, port := splitHostPortLoose(addr)
 	if err := IsBlockedHost(host); err != nil {
 		return "", err
@@ -123,7 +129,8 @@ func GuardAddr(addr string) (string, error) {
 	if allowPrivate.Load() {
 		return addr, nil
 	}
-	ips, err := net.LookupIP(host)
+	var r net.Resolver
+	ips, err := r.LookupIPAddr(ctx, host)
 	if err != nil {
 		return "", fmt.Errorf("urlguard: resolve %q: %w", host, err)
 	}
@@ -132,7 +139,7 @@ func GuardAddr(addr string) (string, error) {
 	}
 	var first netip.Addr
 	for _, ip := range ips {
-		a, ok := netip.AddrFromSlice(ip)
+		a, ok := netip.AddrFromSlice(ip.IPAddr().IP)
 		if !ok {
 			return "", fmt.Errorf("urlguard: resolve %q: bad IP", host)
 		}
