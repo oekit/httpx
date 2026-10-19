@@ -1,3 +1,8 @@
+## [v0.8.2] — 2026-10-20
+
+- fix(metrics): 熔断状态改为类型化传递——`options.go` 的 `ObserveTransition(…, int(from), int(to))` 改为 `ObserveTransitionTyped(…, resilience.CircuitState(from), resilience.CircuitState(to))`，状态不再以裸 int 跨模块流转。同时加**编译期钉子**：`gobreaker.State` 与 `resilience.CircuitState` 数值必须一致（差值非 0 即编译失败）——谁改动 resilience 侧数值，本仓立刻编译红，而不是运行期把熔断状态标签悄悄记反（熔断打开被记成 `half_open`）。指标产出**逐字节不变**（标签仍是 `closed`/`half_open`/`open` 字符串）。
+- build: 矩阵内依赖地板 `metrics` v0.1.7 → v0.1.9（`core` 间接随之 v0.7.0 → v0.9.2）。
+
 ## [v0.8.1] — 2026-10-19
 
 - build: 矩阵内依赖地板对齐（align_floors 不动点）：concurrency v0.5.4 → v0.17.0、logx v0.6.0 → v0.7.0、pkg v0.15.0 → v0.15.1

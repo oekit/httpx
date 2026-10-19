@@ -39,12 +39,12 @@ github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 h1:C3w9PqII01/Oq
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822/go.mod h1:+n7T8mK8HuQTcFwEeznm/DIxMOiR9yIdICNftLE1DvQ=
 github.com/oekit/concurrency v0.17.0 h1:pYepgeTVhNLK9h7D0HzwfAKEWEREQ/7ewA+zCCiG/Uw=
 github.com/oekit/concurrency v0.17.0/go.mod h1:K5wV2UwkfvYUQFOawBCmaE29AGhWTGs3hsKu2vvKw4Y=
-github.com/oekit/core v0.7.0 h1:Iexn7+2xgi3NFexHoYgEzWWxEz7H1AjxyAQ7tLibA98=
-github.com/oekit/core v0.7.0/go.mod h1:HhBTwYHU5MUp9tfNvHjfZv6P4yglQmn4jKmz98dUIsM=
+github.com/oekit/core v0.9.2 h1:UmNJwkAWDxoQJlXlsSP0Gz99/pc6hbP1z+qLhxmnSLk=
+github.com/oekit/core v0.9.2/go.mod h1:HhBTwYHU5MUp9tfNvHjfZv6P4yglQmn4jKmz98dUIsM=
 github.com/oekit/logx v0.7.0 h1:CHyzcS6uR2Gq2JkOIqW0b04mHhu48+4ESm7dQvlk1RA=
 github.com/oekit/logx v0.7.0/go.mod h1:x3wn+/0aYDrcs7EavWWAz8qUbwtysTB/gvuLZxtl2B0=
-github.com/oekit/metrics v0.1.7 h1:XEEelLEYloIr1fYPRvQ/zPgSNY78KPfgDQiLAl6FG+M=
-github.com/oekit/metrics v0.1.7/go.mod h1:AkoQC3zSjtNBHL3DVyyM6auhQFvqUmsuyrPKv69a7Mc=
+github.com/oekit/metrics v0.1.9 h1:BSW3UwRF72cR8GlOBpvYSOGD2D57rt9PzKtCL6Kd+yw=
+github.com/oekit/metrics v0.1.9/go.mod h1:r319l1j6E3KCswuHHLCtYUXrQh3N+PxFyi4s8EFy+Ik=
 github.com/oekit/pkg v0.15.1 h1:lfePssUYHCAs1T7ahvdcQnkJNGsFzNpWmPhmd3Lkk3g=
 github.com/oekit/pkg v0.15.1/go.mod h1:sVeOtmG1sLY2aSnzFIbUAF2Qoh7G8R5vnWtWmLCv8NM=
 github.com/oekit/registry v0.4.1 h1:GBUmcnn78IyN6cz5eYfog+UADuyU5RdrznKRxt2tRNQ=
