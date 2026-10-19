@@ -14,10 +14,25 @@ import (
 	"github.com/cloudwego/hertz/pkg/network"
 	"github.com/cloudwego/hertz/pkg/protocol"
 	"github.com/oekit/httpx/loadbalance"
+	"github.com/oekit/metrics/resilience"
 	prom "github.com/prometheus/client_golang/prometheus"
 	"github.com/sony/gobreaker"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
+)
+
+// 编译期断言：gobreaker.State 与 resilience.CircuitState 的数值必须一致。
+//
+// 钉子放在**消费侧**——谁改动 resilience 侧的数值，httpx 立刻编译红，
+// 而不是运行期把熔断状态标签悄悄记反（熔断打开被记成 half_open）。
+//
+// 手法：数组长度必须为 0，差值非 0 即编译失败（正负都拦得住）。
+// 不用 `uint8(差值)` 形态——它只在差值为**负**时报错，resilience 侧把 2
+// 改成 3 会静默通过（uint8(1) 是合法常量），标签从此错位。
+var (
+	_ [0]struct{} = [int(resilience.CircuitStateClosed) - int(gobreaker.StateClosed)]struct{}{}
+	_ [0]struct{} = [int(resilience.CircuitStateHalfOpen) - int(gobreaker.StateHalfOpen)]struct{}{}
+	_ [0]struct{} = [int(resilience.CircuitStateOpen) - int(gobreaker.StateOpen)]struct{}{}
 )
 
 // ClientOption 是 Client 的配置函数类型。
@@ -154,7 +169,11 @@ func WithCircuitBreaker(name string, settings gobreaker.Settings) ClientOption {
 			OnStateChange: func(name string, from, to gobreaker.State) {
 				httpLog.Warn("circuit breaker state change", "name", name, "from", from, "to", to)
 				if c.metrics != nil {
-					c.metrics.rm.ObserveTransition(c.service, metricsKind, int(from), int(to))
+					// 类型化传递：状态不再以裸 int 跨模块流转。转换安全性由本文件
+					// 顶部的编译期钉子保证（gobreaker.State 与
+					// resilience.CircuitState 数值必须一致，否则此处编译失败）。
+					c.metrics.rm.ObserveTransitionTyped(c.service, metricsKind,
+						resilience.CircuitState(from), resilience.CircuitState(to))
 				}
 				if userOnStateChange != nil {
 					userOnStateChange(name, from, to)
