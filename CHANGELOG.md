@@ -1,3 +1,7 @@
+## [v0.8.1] — 2026-10-19
+
+- build: 矩阵内依赖地板对齐（align_floors 不动点）：concurrency v0.5.4 → v0.17.0、logx v0.6.0 → v0.7.0、pkg v0.15.0 → v0.15.1
+
 ## [v0.8.0] — 2026-10-19
 
 ### refactor(urlguard)!: SSRF 防护收敛到 pkg/urlguard 单一事实源（[httpx#11](https://github.com/oekit/httpx/issues/11)）
