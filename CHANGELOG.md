@@ -1,3 +1,17 @@
+## [v0.8.4] — 2026-10-28
+
+- fix(retry): 显式重试谓词永远赢，与 option 顺序无关——POST 不再被自动重放
+
+`WithRetryIfFunc` 与 `WithRetryConfig` 写**同一个字段**（`c.retryIf`）且都是无条件赋值，而 option 按传入顺序依次 apply ⇒ **后写者赢**。而 `WithRetryConfig` 注入的默认谓词**完全不看 HTTP 方法**（5xx + network error 一律重试）⇒ 把「只重试 GET」写在 `WithRetryConfig` **之前**时，用户谓词被**无声丢弃**，退回默认谓词 ⇒ **POST 被自动重放**。
+
+实测 A/B 对照（下游固定返回 500）：谓词在前 ⇒ 服务端收到 **3** 次请求；谓词在后 ⇒ **1** 次 ⇒ 同一个客户端、同一份代码意图，只因 option 书写顺序不同，POST 就从「不重试」变成「重试 3 次」。
+
+为什么难发现：① 不报错、不 panic；② Go 里 option 顺序是「无所谓」的直觉，写错不会有任何提示；③ 只有下游返回 5xx 时才显形（测试环境常返回 200 ⇒ 全部测试通过）。且 hertz 自带的幂等方法检查在自定义谓词路径下**被完全跳过**（`isDefaultRetryFunc = false`）⇒ 唯一的幂等保护就是这个被丢掉的谓词。
+
+后果形态最坏：下单 / 支付 / 发 webhook 这类 POST 收到下游 500 时被重复执行 ⇒ 重复订单、重复扣款、重复通知；现象与「下游真的失败」难以区分，排障方向会被带偏。
+
+修法：`Client` 增 `retryIfExplicit` 标记，`WithRetryIfFunc` 置位；`WithRetryConfig` 仅在用户**未显式设置**谓词时才注入默认谓词 ⇒ 显式谓词永远赢、与顺序无关。既有口径不变：未设显式谓词时默认谓词行为完全照旧。补 3 条用例：两种顺序下显式谓词都生效、默认谓词仍重试 POST（口径护栏）、显式谓词返回 true 确实触发重试（#41）
+
 ## [v0.8.3] — 2026-10-28
 
 - fix(httpx): 同名 collector **类型不符**时的 panic 不可定位（无检查的类型断言 `are.ExistingCollector.(T)`）——改为有检查的断言 + 人能读懂的错误（既有类型 vs 请求类型 + 怎么改）；同型修法见 oekit/metrics#31
