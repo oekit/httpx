@@ -102,10 +102,25 @@ func (rt *roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	hreq.SetMethod(req.Method)
 	hreq.SetRequestURI(fullURL)
-	c.applyAuth(hreq)
+	// 凭证来源**唯一化**（#43）：调用方显式带了 Authorization 就用它，
+	// 否则才用客户端级凭证（WithBearerToken / WithBasicAuth）。
+	//
+	// 旧实现是 applyAuth(Set) + 透传(Add) ⇒ 两个 Authorization 值并存 ⇒
+	// 线上发出两行 Authorization（违反 RFC 7235 §3.1「客户端 MUST NOT 生成
+	// 多于一个 Authorization 头」），而各服务端对重复头的处理归属不确定
+	// （取首个 ⇒ 调用方的请求级凭证被静默忽略；取末个 ⇒ 客户端凭证被静默覆盖）。
+	// Authorization 不是 hertz 的 special header ⇒ Add 不会被降级为覆盖。
+	if auth := req.Header.Values("Authorization"); len(auth) > 0 {
+		hreq.Header.Set("Authorization", auth[0])
+	} else {
+		c.applyAuth(hreq)
+	}
 	for key, values := range req.Header {
 		if skipBridgeHeader(key) {
 			continue
+		}
+		if strings.EqualFold(key, "Authorization") {
+			continue // 已在上方按「调用方优先」单独处理
 		}
 		for _, v := range values {
 			hreq.Header.Add(key, v)

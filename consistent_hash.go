@@ -114,17 +114,24 @@ func (b *ConsistentHashSelector) ringFor(nodes []loadbalance.Node) []consistentN
 	return ring
 }
 
-// sameViewLocked 节点地址列表未变化（调用方持有锁）。
-// 节点对象来自 EndpointManager 每轮刷新的全量重建，地址列表逐项比较即可
-// 判定环是否需要重建（权重变化必然伴随刷新产生新列表，地址相同权重不同
-// 的场景由 EndpointManager 刷新语义保证重建——刷新后 nodes 切片本身是
-// 新对象，这里按地址比较是性能折中，权重单点调权场景需等下一轮刷新生效）。
+// sameViewLocked 节点地址列表与权重均未变化（调用方持有锁）。
+//
+// **权重也必须参与比较**（2026-10-28，#42）：权重折算出的虚拟副本数参与建环
+// （buildConsistentRing 按 weight/mean 计算 replicas）⇒ 每轮刷新都会带来
+// 携带新权重的节点对象，但若只比地址，地址不变的调权会被判成「同一视图」
+// ⇒ 环被永久缓存 ⇒ **调权静默失效**（注册中心降权重想摘流，降不动）。
+//
+// 权重用精确比较：权重值来自注册中心的同一份实例数据，刷新之间逐字节稳定，
+// 不存在浮点抖动导致的「每次刷新都重建」问题。
 func (b *ConsistentHashSelector) sameViewLocked(nodes []loadbalance.Node) bool {
 	if len(b.nodes) != len(nodes) {
 		return false
 	}
 	for i := range nodes {
 		if b.nodes[i].Address() != nodes[i].Address() {
+			return false
+		}
+		if b.nodes[i].Weight() != nodes[i].Weight() {
 			return false
 		}
 	}
