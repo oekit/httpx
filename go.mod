@@ -4,12 +4,12 @@ go 1.26.0
 
 require (
 	github.com/cloudwego/hertz v0.10.6
-	github.com/oekit/concurrency v0.17.0
-	github.com/oekit/logx v0.7.0
-	github.com/oekit/metrics v0.1.9
-	github.com/oekit/pkg v0.15.1
-	github.com/oekit/registry v0.4.1
-	github.com/oekit/tracing v0.2.2
+	github.com/oekit/concurrency v0.23.0
+	github.com/oekit/logx v0.8.0
+	github.com/oekit/metrics v0.1.10
+	github.com/oekit/pkg v0.30.0
+	github.com/oekit/registry v0.5.1
+	github.com/oekit/tracing v0.3.1
 	github.com/prometheus/client_golang v1.25.0
 	github.com/sony/gobreaker v1.0.0
 	go.opentelemetry.io/otel v1.47.0
@@ -46,6 +46,6 @@ require (
 	go.opentelemetry.io/otel/log v1.47.0 // indirect
 	go.opentelemetry.io/otel/metric v1.47.0 // indirect
 	golang.org/x/arch v0.14.0 // indirect
-	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 )
