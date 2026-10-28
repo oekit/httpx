@@ -257,6 +257,15 @@ func WithRetryConfig(maxAttempts uint, initDelay, maxDelay, maxJitter time.Durat
 		// 默认 5xx + network error 都重试;ekit 旧 WithRetry 行为兼容。
 		// RetryIfFunc 必须在 client.NewClient 之后通过 SetRetryIfFunc 设置,
 		// 所以这里只存到 c.retryIf,NewClient 末尾统一应用。
+		//
+		// **只有用户没有显式设置过谓词时才注入默认谓词**（#41）：两个 option
+		// 写同一个字段时，原本是「后写者赢」⇒ 把 WithRetryIfFunc 写在
+		// WithRetryConfig 之前就会让用户谓词被**无声丢弃**，退回这个**不看
+		// HTTP 方法**的默认谓词 ⇒ POST 在 5xx 上被自动重放（重复下单/
+		// 重复扣款级）。现在显式谓词永远赢，与 option 顺序无关。
+		if c.retryIfExplicit {
+			return
+		}
 		c.retryIf = func(_ *protocol.Request, resp *protocol.Response, err error) bool {
 			if err != nil {
 				return true
@@ -272,9 +281,14 @@ func WithRetryConfig(maxAttempts uint, initDelay, maxDelay, maxJitter time.Durat
 // WithRetryIfFunc 覆盖 ekit 默认重试触发条件(5xx + network error),
 // 由用户传更严格的 predicate(例如只对 GET 重试、特定状态码范围等)。
 // 不调 WithRetryIfFunc 时,WithRetryConfig 注入默认 5xx + network error 条件。
+//
+// **显式谓词永远赢，与 option 顺序无关**（#41）：即便本 option 写在
+// WithRetryConfig 之前也不会被默认谓词覆盖 ⇒ 不会再出现「以为收窄了重试、
+// 实际 POST 仍被重放」这种静默失效。
 func WithRetryIfFunc(fn func(req *protocol.Request, resp *protocol.Response, err error) bool) ClientOption {
 	return func(c *Client) {
 		c.retryIf = fn
+		c.retryIfExplicit = true
 	}
 }
 
