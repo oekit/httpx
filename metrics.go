@@ -2,6 +2,7 @@ package httpx
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
 	"time"
 
@@ -72,7 +73,17 @@ func mustRegisterReuse[T prom.Collector](reg prom.Registerer, fresh T) T {
 	if err := reg.Register(fresh); err != nil {
 		var are prom.AlreadyRegisteredError
 		if errors.As(err, &are) {
-			return are.ExistingCollector.(T)
+			existing, ok := are.ExistingCollector.(T)
+			if !ok {
+				// 同名同描述符但**类型不同** ⇒ prometheus 返回 AlreadyRegisteredError
+				// （而非直接拒绝），既有 collector 无法当作请求的那个类型复用。
+				// 直接 .(T) 会 panic 成一句不可定位的 "interface conversion"——
+				// 换成人能读懂的错误（既有类型 vs 请求类型 + 怎么改）。
+				panic(fmt.Errorf("httpx: 同名 collector 类型不符：已注册 %T，请求 %T"+
+					"（fqName 与描述符相同但类型不同——请改用同一类型的同名指标，或换 namespace）",
+					are.ExistingCollector, fresh))
+			}
+			return existing
 		}
 		panic(err)
 	}
