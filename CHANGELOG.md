@@ -1,3 +1,7 @@
+## [v0.8.3] — 2026-10-28
+
+- fix(httpx): 同名 collector **类型不符**时的 panic 不可定位（无检查的类型断言 `are.ExistingCollector.(T)`）——改为有检查的断言 + 人能读懂的错误（既有类型 vs 请求类型 + 怎么改）；同型修法见 oekit/metrics#31
+
 ## [v0.8.2] — 2026-10-20
 
 - fix(metrics): 熔断状态改为类型化传递——`options.go` 的 `ObserveTransition(…, int(from), int(to))` 改为 `ObserveTransitionTyped(…, resilience.CircuitState(from), resilience.CircuitState(to))`，状态不再以裸 int 跨模块流转。同时加**编译期钉子**：`gobreaker.State` 与 `resilience.CircuitState` 数值必须一致（差值非 0 即编译失败）——谁改动 resilience 侧数值，本仓立刻编译红，而不是运行期把熔断状态标签悄悄记反（熔断打开被记成 `half_open`）。指标产出**逐字节不变**（标签仍是 `closed`/`half_open`/`open` 字符串）。
