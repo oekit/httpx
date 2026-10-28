@@ -33,6 +33,7 @@ type Client struct {
 	mw                     []client.Middleware
 	lastMW                 []client.Middleware // 走 Hertz client.UseAsLast 注入(trace propagation 等)
 	retryIf                func(req *protocol.Request, resp *protocol.Response, err error) bool
+	retryIfExplicit        bool // 用户是否显式设置过重试谓词（WithRetryIfFunc）
 	hasBreaker             bool
 }
 
