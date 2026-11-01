@@ -1,3 +1,7 @@
+## [v0.8.6] — 2026-11-01
+
+- fix(httpx): WithCookieJar 真生效 + base 中间件统一裸 Do 的 baseURL/auth/cookie（裸 Hertz().Do 此前三样全缺，下游 5 处生产 bug）
+
 ## [v0.8.5] — 2026-10-30
 
 - build: 矩阵内依赖地板 `tracing` v0.3.1 → v0.3.2（维护轮全量对齐；本版不含 API 变更）
