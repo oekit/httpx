@@ -1,3 +1,7 @@
+## [v0.8.7] — 2026-11-01
+
+- fix(httpx): base 中间件拼接相对 URI 时漏 ? 分隔查询串（v0.8.6 回归，带查询串的 path 粘连 404）
+
 ## [v0.8.6] — 2026-11-01
 
 - fix(httpx): WithCookieJar 真生效 + base 中间件统一裸 Do 的 baseURL/auth/cookie（裸 Hertz().Do 此前三样全缺，下游 5 处生产 bug）
