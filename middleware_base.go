@@ -27,7 +27,11 @@ func (c *Client) baseMiddleware() client.Middleware {
 				if !strings.HasPrefix(path, "/") {
 					path = "/" + path
 				}
-				req.SetRequestURI(base + path + string(req.URI().QueryString()))
+				target := base + path
+				if q := string(req.URI().QueryString()); q != "" {
+					target += "?" + q
+				}
+				req.SetRequestURI(target)
 			}
 			if len(req.Header.Get("Authorization")) == 0 {
 				c.applyAuth(req)

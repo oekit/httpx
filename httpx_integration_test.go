@@ -650,6 +650,21 @@ func TestRawDo_BaseURLAuthAndCookieJar(t *testing.T) {
 		t.Errorf("basic auth not applied, auth=%q", a1)
 	}
 
+	// 查询串拼接：base + path + ? + query（曾漏 ? 令 pathquery 粘连 404）
+	reqQ := &protocol.Request{}
+	reqQ.SetMethod("GET")
+	reqQ.SetRequestURI("/search?q=abc&page=2")
+	respQ := &protocol.Response{}
+	if err := c.Hertz().Do(context.Background(), reqQ, respQ); err != nil {
+		t.Fatalf("raw Do query: %v", err)
+	}
+	mu.Lock()
+	pq := gotPath
+	mu.Unlock()
+	if pq != "/search" {
+		t.Errorf("query join mangled path: %q", pq)
+	}
+
 	// 第二跳：jar 注入第一跳回收的 sid
 	req2 := &protocol.Request{}
 	req2.SetMethod("GET")
