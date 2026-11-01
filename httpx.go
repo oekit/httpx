@@ -2,6 +2,7 @@ package httpx
 
 import (
 	"context"
+	"net/http"
 
 	"sync/atomic"
 	"time"
@@ -25,6 +26,7 @@ type Client struct {
 	bearerToken            string
 	basicUser              string
 	basicPass              string
+	cookieJar              http.CookieJar
 	endpointManager        *EndpointManager
 	priorityQueue          *PriorityQueue
 	pendingSelector        loadbalance.Selector
@@ -77,6 +79,9 @@ func NewClient(service string, opts ...ClientOption) *Client {
 	if c.metrics != nil && c.hasBreaker {
 		c.metrics.rm.ObserveBreakerState(c.service, metricsKind, resilience.StateClosed)
 	}
+	// base 中间件最先注册 = 最外层：相对 URI 补 baseURL、补 auth、
+	// cookie jar 注入/回收，使裸 Hertz().Do 与封装方法行为一致
+	c.client.Use(c.baseMiddleware())
 	if len(c.mw) > 0 {
 		c.client.Use(c.mw...)
 	}

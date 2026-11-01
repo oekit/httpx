@@ -64,11 +64,10 @@ func WithBasicAuth(user, password string) ClientOption {
 }
 
 // WithCookieJar 为客户端设置 Cookie Jar。
-// Hertz client 不支持运行时设置 CookieJar；此选项记录警告并忽略。
+// 通过 base 中间件在请求前注入 Cookie、响应后回收 Set-Cookie，
+// 对全部请求路径生效（含裸 Hertz().Do）。
 func WithCookieJar(jar http.CookieJar) ClientOption {
-	return func(_ *Client) {
-		httpLog.Warn("WithCookieJar is not supported with Hertz client, ignored")
-	}
+	return func(c *Client) { c.cookieJar = jar }
 }
 
 // WithTLSSkipVerify 跳过 TLS 证书验证。

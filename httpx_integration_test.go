@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -596,4 +598,60 @@ func (s *stubNNSClient) GetInstances(_ context.Context, _ string) ([]registry.In
 		return nil, s.err
 	}
 	return s.instances, nil
+}
+
+func TestRawDo_BaseURLAuthAndCookieJar(t *testing.T) {
+	// 裸 Hertz().Do 路径必须与封装方法行为一致：相对 URI 拼 baseURL、
+	// 自动带 Basic auth、cookie jar 注入并回收 Set-Cookie。
+	// （历史上裸 Do 三样全缺，下游踩出 5 处生产 bug。）
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotPath, gotAuth, gotCookie string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		gotCookie = r.Header.Get("Cookie")
+		if r.URL.Path == "/login" {
+			http.SetCookie(w, &http.Cookie{Name: "sid", Value: "abc123", Path: "/"})
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "ok")
+	}))
+	t.Cleanup(srv.Close)
+
+	c := NewClient("test",
+		WithBaseURL(srv.URL),
+		WithBasicAuth("u1", "p1"),
+		WithCookieJar(jar),
+	)
+	defer c.Close()
+
+	// 第一跳：裸 Do 相对 URI + auth
+	req := &protocol.Request{}
+	req.SetMethod("GET")
+	req.SetRequestURI("/login")
+	resp := &protocol.Response{}
+	if err := c.Hertz().Do(context.Background(), req, resp); err != nil {
+		t.Fatalf("raw Do: %v", err)
+	}
+	if gotPath != "/login" {
+		t.Errorf("base URL not applied, path=%q", gotPath)
+	}
+	if !strings.HasPrefix(gotAuth, "Basic ") {
+		t.Errorf("basic auth not applied, auth=%q", gotAuth)
+	}
+
+	// 第二跳：jar 注入第一跳回收的 sid
+	req2 := &protocol.Request{}
+	req2.SetMethod("GET")
+	req2.SetRequestURI("/next")
+	resp2 := &protocol.Response{}
+	if err := c.Hertz().Do(context.Background(), req2, resp2); err != nil {
+		t.Fatalf("raw Do 2: %v", err)
+	}
+	if !strings.Contains(gotCookie, "sid=abc123") {
+		t.Errorf("cookie jar not injected, cookie=%q", gotCookie)
+	}
 }
