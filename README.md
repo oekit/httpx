@@ -8,7 +8,7 @@
 ## 安装
 
 ```bash
-go get github.com/oekit/httpx@v0.8.6
+go get github.com/oekit/httpx@v0.8.7
 ```
 
 ## 这个仓库做什么
