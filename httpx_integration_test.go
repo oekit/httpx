@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -608,11 +609,14 @@ func TestRawDo_BaseURLAuthAndCookieJar(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var mu sync.Mutex
 	var gotPath, gotAuth, gotCookie string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		gotPath = r.URL.Path
 		gotAuth = r.Header.Get("Authorization")
 		gotCookie = r.Header.Get("Cookie")
+		mu.Unlock()
 		if r.URL.Path == "/login" {
 			http.SetCookie(w, &http.Cookie{Name: "sid", Value: "abc123", Path: "/"})
 		}
@@ -636,11 +640,14 @@ func TestRawDo_BaseURLAuthAndCookieJar(t *testing.T) {
 	if err := c.Hertz().Do(context.Background(), req, resp); err != nil {
 		t.Fatalf("raw Do: %v", err)
 	}
-	if gotPath != "/login" {
-		t.Errorf("base URL not applied, path=%q", gotPath)
+	mu.Lock()
+	p1, a1 := gotPath, gotAuth
+	mu.Unlock()
+	if p1 != "/login" {
+		t.Errorf("base URL not applied, path=%q", p1)
 	}
-	if !strings.HasPrefix(gotAuth, "Basic ") {
-		t.Errorf("basic auth not applied, auth=%q", gotAuth)
+	if !strings.HasPrefix(a1, "Basic ") {
+		t.Errorf("basic auth not applied, auth=%q", a1)
 	}
 
 	// 第二跳：jar 注入第一跳回收的 sid
@@ -651,7 +658,10 @@ func TestRawDo_BaseURLAuthAndCookieJar(t *testing.T) {
 	if err := c.Hertz().Do(context.Background(), req2, resp2); err != nil {
 		t.Fatalf("raw Do 2: %v", err)
 	}
-	if !strings.Contains(gotCookie, "sid=abc123") {
-		t.Errorf("cookie jar not injected, cookie=%q", gotCookie)
+	mu.Lock()
+	finalCookie := gotCookie
+	mu.Unlock()
+	if !strings.Contains(finalCookie, "sid=abc123") {
+		t.Errorf("cookie jar not injected, cookie=%q", finalCookie)
 	}
 }
