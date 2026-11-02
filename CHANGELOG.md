@@ -16,7 +16,7 @@
 
 ## [v0.8.4] — 2026-10-28
 
-- fix(retry): 显式重试谓词永远赢，与 option 顺序无关——POST 不再被自动重放
+- fix(retry): 显式重试谓词永远赢，与 option 顺序无关（#41）——POST 不再被自动重放
 
 `WithRetryIfFunc` 与 `WithRetryConfig` 写**同一个字段**（`c.retryIf`）且都是无条件赋值，而 option 按传入顺序依次 apply ⇒ **后写者赢**。而 `WithRetryConfig` 注入的默认谓词**完全不看 HTTP 方法**（5xx + network error 一律重试）⇒ 把「只重试 GET」写在 `WithRetryConfig` **之前**时，用户谓词被**无声丢弃**，退回默认谓词 ⇒ **POST 被自动重放**。
 
@@ -160,7 +160,7 @@ github.com/oekit/httpx                    # package httpx（模块根）
 - 熔断器（gobreaker）+ 规范哨兵 `ErrCircuitOpen`
 - 指数退避重试、弹性指标、OTel 透传
 - 服务发现 / 一致性哈希（权重感知虚拟副本）
-- `WithDialFunc` / `WithHertzOption` — 拨号层拦截与 Hertz 原生选项透传（SSRF 防护）
+- `WithDialFunc` / `WithHertzOption` — 拨号层拦截与 Hertz 原生选项透传（SSRF 防护）（#5）
 - `loadbalance` — RoundRobin / Random / Weighted
 
 ### 迁移（从旧路径）
