@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/cloudwego/hertz v0.10.6
-	github.com/oekit/concurrency v0.23.2
+	github.com/oekit/concurrency v0.23.3
 	github.com/oekit/logx v0.8.0
 	github.com/oekit/metrics v0.1.10
 	github.com/oekit/pkg v0.31.1
