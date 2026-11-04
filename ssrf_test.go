@@ -87,11 +87,16 @@ func TestSafeDialFuncWith_InvalidCIDRFailFast(t *testing.T) {
 }
 
 // TestWithSafeDial_OptionPresent：无参形态向后兼容（v0.7.0 调用方零改动）。
+// #74 起装配面从 hzOpts 挪到 c.dialer（NewClient 末位兜底，不被
+// client.WithTLSConfig 的拨号器覆盖行为清掉）。
 func TestWithSafeDial_OptionPresent(t *testing.T) {
 	c := &Client{}
 	WithSafeDial()(c)
-	if len(c.hzOpts) == 0 {
-		t.Fatal("WithSafeDial should add hz option")
+	if c.dialer == nil {
+		t.Fatal("WithSafeDial should install TLS-aware dialer")
+	}
+	if _, ok := c.dialer.(*tlsAwareDialer); !ok {
+		t.Fatalf("dialer 应为 *tlsAwareDialer，got %T", c.dialer)
 	}
 }
 

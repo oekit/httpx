@@ -9,6 +9,7 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app/client"
 	"github.com/cloudwego/hertz/pkg/common/config"
+	"github.com/cloudwego/hertz/pkg/network"
 	"github.com/cloudwego/hertz/pkg/protocol"
 	"github.com/oekit/httpx/loadbalance"
 	"github.com/oekit/metrics/resilience"
@@ -32,6 +33,7 @@ type Client struct {
 	pendingSelector        loadbalance.Selector
 	pendingRefreshInterval time.Duration
 	hzOpts                 []config.ClientOption
+	dialer                 network.Dialer // WithDialFunc 装配的拨号器，NewClient 末位兜底装配（#74）
 	mw                     []client.Middleware
 	lastMW                 []client.Middleware // 走 Hertz client.UseAsLast 注入(trace propagation 等)
 	retryIf                func(req *protocol.Request, resp *protocol.Response, err error) bool
@@ -52,6 +54,13 @@ func NewClient(service string, opts ...ClientOption) *Client {
 		client.WithDialTimeout(30 * time.Second),
 		client.WithClientReadTimeout(30 * time.Second),
 	}, c.hzOpts...)
+	// 拨号器**末位兜底**装配（#74）：hertz 的 client.WithTLSConfig 会无条件
+	// 覆盖 o.Dialer = standard.NewDialer()——WithTLSSkipVerify 之类的 TLS 选项
+	// 一旦排在 WithDialFunc 之后，自定义拨号函数（含 WithSafeDial 的 SSRF 防护）
+	// 就被静默丢弃。选项按序生效、末位覆盖，这里最后 append 保证装配面赢。
+	if c.dialer != nil {
+		hzOpts = append(hzOpts, client.WithDialer(c.dialer))
+	}
 
 	hc, err := client.NewClient(hzOpts...)
 	if err != nil {

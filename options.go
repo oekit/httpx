@@ -12,6 +12,8 @@ import (
 	hertzretry "github.com/cloudwego/hertz/pkg/app/client/retry"
 	"github.com/cloudwego/hertz/pkg/common/config"
 	"github.com/cloudwego/hertz/pkg/network"
+	"github.com/cloudwego/hertz/pkg/network/dialer"
+	"github.com/cloudwego/hertz/pkg/network/standard"
 	"github.com/cloudwego/hertz/pkg/protocol"
 	"github.com/oekit/httpx/loadbalance"
 	"github.com/oekit/metrics/resilience"
@@ -77,13 +79,30 @@ func WithTLSSkipVerify() ClientOption {
 	}
 }
 
-// WithDialFunc 注入自定义拨号函数，透传至 Hertz client.WithDialFunc。
+// WithDialFunc 注入自定义拨号函数（#74）。
 // 典型用途是出站 SSRF 防护的拨号层拦截：在真正建连前校验 addr 解析出的
 // IP 是否落在内网/黑名单（URL 层字面量检查挡不住 DNS rebinding）。
-// dialers 可选，用于覆盖 Hertz 默认传输实现。
+// dialers 可选，用于覆盖基础拨号器（缺省 DefaultDialer()）。
+//
+// 不再透传 Hertz 的 client.WithDialFunc：hertz 的 customDialer 在有 dialFunc 时
+// **完全丢弃 tlsConfig**（pkg/app/client/option.go 的 DialConnection 直接
+// `return m.dialFunc(address)`）——https 目标的 TLS 握手链路就此断裂，
+// WithSafeDial 形态把明文请求静默打到 443 端口（症状是服务端 400，极难排障）。
+// 本仓改为自行装配 TLS 感知拨号器 tlsAwareDialer：dialFunc 拨通裸连接后按
+// hertz 传入的 tlsConfig 是否为 nil 决定是否补 TLS 握手（见 ssrf.go 实现说明）。
+//
+// 装配时机是 NewClient 的**末位兜底**（不再入 hzOpts）：hertz 的
+// client.WithTLSConfig 会无条件覆盖 o.Dialer——WithTLSSkipVerify 排在本选项
+// 之后时自定义拨号函数会被静默丢弃（SSRF 防护一并失效）。末位 append 保证
+// WithDialFunc/WithSafeDial 的装配面赢。逃生舱 WithHertzOption 自带
+// client.WithDialer 的例外：本选项未使用时不装配、不覆盖逃生舱的拨号器。
 func WithDialFunc(fn network.DialFunc, dialers ...network.Dialer) ClientOption {
 	return func(c *Client) {
-		c.hzOpts = append(c.hzOpts, client.WithDialFunc(fn, dialers...))
+		base := dialer.DefaultDialer()
+		if len(dialers) > 0 && dialers[0] != nil {
+			base = dialers[0]
+		}
+		c.dialer = &tlsAwareDialer{Dialer: base, fn: fn, tlsDialer: standard.NewDialer()}
 	}
 }
 
