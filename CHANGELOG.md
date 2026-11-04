@@ -1,3 +1,9 @@
+## [v0.8.9] — 2026-11-05
+
+- fix(bridge): net/http 桥接层 https 全线打通（#74）——两个叠加根因：①hertz `customDialer` 在有 dialFunc 时完全丢弃 tlsConfig（`DialConnection` 直接 `return m.dialFunc(address)`），且 http1 客户端的 AddTLS 只在代理路径生效 ⇒ WithSafeDial 形态把**明文请求静默打到 443**（复现实测：服务端 400 Bad Request「Client sent an HTTP request to an HTTPS server.」，handler 从未执行、bridge err=nil，看起来像服务端问题，极难排障——凭证头明文上线是安全敏感面）；②hertz `client.WithTLSConfig` **无条件覆盖 `o.Dialer = standard.NewDialer()`** ⇒ `WithTLSSkipVerify` 排在 WithDialFunc 之后时自定义拨号函数连同 SSRF 防护被整个静默丢弃（https 反而「能用」，防护悄悄失效）。修法：`WithDialFunc` 不再透传 hertz 选项，改装配 TLS 感知拨号器 `tlsAwareDialer`——dialFunc 拨通裸连接后按 tlsConfig 是否为 nil（https 目标必非 nil）补 TLS 握手（形态对齐 hertz 代理路径的 AddTLS；握手固定走 standard 拨号器——netpoll 构建下 DefaultDialer 是 netpoll，连接不支持 TLS 包装，会在这一步得到诚实报错而非明文降级），握手受拨号超时约束（先设 deadline、握手后清除）；装配时机改 `NewClient` **末位兜底** append——选项按序生效、末位覆盖，WithDialFunc/WithSafeDial 的装配面从此不被 TLS 选项清掉；`SafeDialFuncWith` 缺省 next 从 DefaultDialer() 改 standard 拨号器（裸拨语义不变，但连接是 net.Conn 背书、可被 TLS 包装）。补回归测试：https + WithSafeDial 必须真走 TLS 且防护在链路上（计数 next 断言）、任意自定义 dialFunc 同获 TLS 语义、明文 http 行为不变。netpoll 构建下**缺省（无 dialFunc）https 仍报 not support tls**（hertz netpoll 拨号器不支持 TLS，fail-fast，与 issue 判定一致）——桥接层走 WithSafeDial 或任意 WithDialFunc 即可 https
+
+关联问题单：httpx#74。
+
 ## [v0.8.8] — 2026-11-02
 
 - build: 矩阵内依赖地板 `pkg` v0.31.0 → v0.31.1（维护轮全量对齐；本版不含 API 变更）

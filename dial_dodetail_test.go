@@ -11,8 +11,11 @@ import (
 	"github.com/cloudwego/hertz/pkg/network"
 )
 
-// TestWithDialFunc_AppendsHertzOption 验证 WithDialFunc 透传到 c.hzOpts。
-func TestWithDialFunc_AppendsHertzOption(t *testing.T) {
+// TestWithDialFunc_InstallsDialer 验证 WithDialFunc 装配 TLS 感知拨号器（#74）。
+// 装配面已从 c.hzOpts 挪到 c.dialer（NewClient 末位兜底 append——hertz 的
+// client.WithTLSConfig 会无条件覆盖 o.Dialer，hzOpts 位置的装配会被排在其后的
+// TLS 选项清掉），断言类型即可。
+func TestWithDialFunc_InstallsDialer(t *testing.T) {
 	var dials []string
 	fn := func(addr string) (network.Conn, error) {
 		dials = append(dials, addr)
@@ -22,8 +25,12 @@ func TestWithDialFunc_AppendsHertzOption(t *testing.T) {
 	if c == nil {
 		t.Fatal("NewClient returned nil")
 	}
-	if len(c.hzOpts) == 0 {
-		t.Fatal("expected hzOpts to include WithDialFunc, got empty")
+	td, ok := c.dialer.(*tlsAwareDialer)
+	if !ok {
+		t.Fatalf("expected *tlsAwareDialer installed, got %T", c.dialer)
+	}
+	if td.fn == nil {
+		t.Fatal("tlsAwareDialer.fn should wrap the injected dial func")
 	}
 }
 
