@@ -1,3 +1,7 @@
+## [v0.8.15] — 2026-11-08
+
+- build: 依赖地板对齐——本版把 oekit 依赖地板抬到各依赖当前最新已发布版本（matrix-tools/scripts/align_floors.py 维护轮）
+
 ## [v0.8.14] — 2026-11-08
 
 - docs(request): #102 收口——该单为 #86 的重报（UploadFile 不读文件恒传空 part、filename 泄漏完整本地路径），修复已随 v0.8.12（PR #93）落地（`os.ReadFile` + `filepath.Base`，含内容/文件名/读失败三方回归测试）；本版把 request.go 与回归测试的注释标注对齐重报单号，无行为变更
