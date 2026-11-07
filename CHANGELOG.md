@@ -1,3 +1,18 @@
+## [v0.8.12] — 2026-11-07
+
+- feat(client): NewClient 构造失败显式返回 (*Client, error) + MustNewClient——与家族「错误显式返回」契约对齐（BREAKING，PR #93）（#83）
+- fix(client): Close 关闭底层 Hertz client 空闲连接池——短生命周期场景不再每次泄漏一套连接/协程（#84）
+- fix(retry): 默认重试谓词加幂等门——非幂等请求（含 POST）不再被无条件 5xx 重放，旧语义经 WithRetryIfFunc 显式放开（#85）
+- fix(request): UploadFile 真正读取本地文件——此前实际上传空文件，filename 取 Base 不泄漏目录（#86）
+- feat(client): WithStream 流式预设（关读超时保留拨号超时）+ 超时语义族文档（README 速查表）（#87）
+- fix(loadbalance): NewPriorityQueue 构造期校验 capacity——0 不再全量阻塞、负数不再裸 panic（#88）
+- fix(options): WithNNS/WithServiceResolver 替换旧 resolver 前 Stop——组合 option 的刷新 goroutine 泄漏与静态端点被 NNS 覆盖双向关闭（#89）
+- fix(options): WithTimeout 同时覆盖拨号+读（拨号上限不倒挂）；NNS/静态实例地址 scheme 经 MetadataKeyScheme 可表达 https，不再硬编码 http://（#90）
+- feat(doonce): DoOnce 低阶单发原语——client 可注入、无重试/熔断复合（#91）
+- fix(options): WithTimeout 语义补全（拨号+读双边界）与单项逃生舱显式声明——与 #87/#90 同根因的超时语义族整体梳理（#92）
+
+关联问题单：httpx#83、httpx#84、httpx#85、httpx#86、httpx#87、httpx#88、httpx#89、httpx#90、httpx#91、httpx#92。
+
 ## [v0.8.11] — 2026-11-06
 
 - build: 矩阵依赖地板对齐（维护轮 #233）
