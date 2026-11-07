@@ -240,13 +240,14 @@ func WithCircuitBreaker(name string, settings gobreaker.Settings) ClientOption {
 // ekit 固定注入 CombineDelay(BackOffDelayPolicy, RandomDelayPolicy):
 // 每次重试延迟 = initDelay<<attempts + [0, maxJitter) 随机抖动,MaxDelay 封顶。
 //
-// ⚠️ 重试触发条件(与 Hertz 默认不同):
+// ⚠️ 重试触发条件(与 Hertz 默认不同,带幂等方法门 #85):
 //
-//	Hertz 官方 DefaultRetryIf 仅在网络错误时重试,不重试 5xx 响应(只检查
-//	idempotent 方法 — 参见 vendor 源码 protocol/client/client.go:82)。
-//	ekit WithRetryConfig 默认同时重试 5xx + network error,语义对齐旧
-//	WithRetry(手写 middleware) 行为。如果需要更严格的条件(例如只重试
-//	GET/HEAD/OPTIONS/TRACE/特定状态码),可通过 WithRetryIfFunc 覆盖。
+//	Hertz 官方 DefaultRetryIf 仅在幂等方法 + 网络错误时重试,不重试 5xx。
+//	ekit WithRetryConfig 默认重试「幂等方法/无 body 请求」上的 5xx +
+//	network error——比 Hertz 宽(补 5xx),比旧版「不看方法一律重试」严。
+//	旧版默认对 POST 等**非幂等请求**的 5xx 无条件重放,网关恰好超时但
+//	后端已实际写入时会重复下单/重复创建——「保持兼容」不等于「安全默认」。
+//	需要放开旧语义(任何方法都重试)时,经 WithRetryIfFunc 显式声明。
 //
 // 官方依据:https://www.cloudwego.io/zh/docs/hertz/tutorials/basic-feature/client/
 // (Client 配置表 WithRetryConfig 示例明确列出 retry.WithDelayPolicy;
@@ -272,33 +273,54 @@ func WithRetryConfig(maxAttempts uint, initDelay, maxDelay, maxJitter time.Durat
 				hertzretry.RandomDelayPolicy,
 			)),
 		))
-		// 默认 5xx + network error 都重试;ekit 旧 WithRetry 行为兼容。
+		// 默认重试条件：幂等方法门 + (5xx | network error)（#85）。
 		// RetryIfFunc 必须在 client.NewClient 之后通过 SetRetryIfFunc 设置,
 		// 所以这里只存到 c.retryIf,NewClient 末尾统一应用。
 		//
 		// **只有用户没有显式设置过谓词时才注入默认谓词**（#41）：两个 option
 		// 写同一个字段时，原本是「后写者赢」⇒ 把 WithRetryIfFunc 写在
-		// WithRetryConfig 之前就会让用户谓词被**无声丢弃**，退回这个**不看
-		// HTTP 方法**的默认谓词 ⇒ POST 在 5xx 上被自动重放（重复下单/
-		// 重复扣款级）。现在显式谓词永远赢，与 option 顺序无关。
+		// WithRetryConfig 之前就会让用户谓词被**无声丢弃**，退回默认谓词。
+		// 现在显式谓词永远赢，与 option 顺序无关。
 		if c.retryIfExplicit {
 			return
 		}
-		c.retryIf = func(_ *protocol.Request, resp *protocol.Response, err error) bool {
-			if err != nil {
-				return true
-			}
-			if resp != nil && resp.StatusCode() >= 500 {
-				return true
-			}
-			return false
-		}
+		c.retryIf = defaultRetryIf
 	}
 }
 
-// WithRetryIfFunc 覆盖 ekit 默认重试触发条件(5xx + network error),
-// 由用户传更严格的 predicate(例如只对 GET 重试、特定状态码范围等)。
-// 不调 WithRetryIfFunc 时,WithRetryConfig 注入默认 5xx + network error 条件。
+// defaultRetryIf 是 WithRetryConfig 注入的默认重试条件（#85）：
+//
+//	幂等方法/无 body 请求 && (network error | 5xx)
+//
+// 幂等门对 network error 同样生效——POST 超时时后端可能已收到并写入，
+// 重放与 5xx 重放同样是重复下单级风险。需要旧「不看方法」语义的调用方
+// 经 WithRetryIfFunc 显式放开。
+func defaultRetryIf(req *protocol.Request, resp *protocol.Response, err error) bool {
+	if req != nil && !idempotentForRetry(req) {
+		return false
+	}
+	if err != nil {
+		return true
+	}
+	return resp != nil && resp.StatusCode() >= 500
+}
+
+// idempotentForRetry 判定请求对默认重试是否安全：幂等方法（GET/HEAD/
+// OPTIONS/PUT/DELETE/TRACE，对齐 hertz isIdempotent 的方法集）或无 body
+// 请求（无 body 的 POST 重放无副作用面）。
+func idempotentForRetry(req *protocol.Request) bool {
+	switch string(req.Method()) {
+	case http.MethodGet, http.MethodHead, http.MethodOptions,
+		http.MethodPut, http.MethodDelete, http.MethodTrace:
+		return true
+	}
+	return len(req.Body()) == 0
+}
+
+// WithRetryIfFunc 覆盖 ekit 默认重试触发条件(幂等方法门 + 5xx +
+// network error),由用户传自定义 predicate(更严格:只对特定方法/状态码;
+// 更宽松:放开非幂等请求的重放)。
+// 不调 WithRetryIfFunc 时,WithRetryConfig 注入默认条件。
 //
 // **显式谓词永远赢，与 option 顺序无关**（#41）：即便本 option 写在
 // WithRetryConfig 之前也不会被默认谓词覆盖 ⇒ 不会再出现「以为收窄了重试、

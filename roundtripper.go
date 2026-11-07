@@ -32,8 +32,8 @@ import (
 //     桥接面向低 QPS 控制面调用，不适合大文件流式场景；
 //   - 非 2xx 不是错误（标准库语义）：调用方自行判定 StatusCode；熔断拒绝返回
 //     裸 ErrCircuitOpen（errors.Is 判定）；
-//   - 重试缺省关闭，WithRetryConfig 显式开启（防 OAuth POST 等非幂等请求被
-//     自动重放）；开启后对幂等语义的自评仍是调用方责任（WithRetryIfFunc 可收紧）；
+//   - 重试缺省关闭，WithRetryConfig 显式开启；开启后的默认条件带幂等方法门
+//     （非幂等请求不自动重放，#85），放开经 WithRetryIfFunc 显式声明；
 //   - hop-by-hop 头（Connection/Keep-Alive/TE/Trailers/Transfer-Encoding/Upgrade/
 //     Proxy-*）与 Host/Content-Length 不透传（由目标端点与 body 长度决定），
 //     其余请求头全量透传；响应头全量回填。
