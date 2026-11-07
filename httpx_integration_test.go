@@ -866,3 +866,62 @@ func TestUploadFile_MissingFileError(t *testing.T) {
 		t.Errorf("error should mention read upload file, got %q", err.Error())
 	}
 }
+
+// TestWithStream_DisablesReadTimeout 回归（#87）：默认读超时会把任何长流
+// 掐死（症状是连接被远端/代理静默切断）；WithStream 预设关闭读超时后，
+// 总时长超过 WithTimeout 预算的慢响应也能读完。
+func TestWithStream_DisablesReadTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = io.WriteString(w, "chunk1;")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		time.Sleep(700 * time.Millisecond) // 总时长 >> 300ms 预算
+		_, _ = io.WriteString(w, "chunk2")
+	}))
+	t.Cleanup(srv.Close)
+
+	// 对照组：仅 WithTimeout(300ms)——慢响应被读超时掐断
+	strict := MustNewClient("test", WithBaseURL(srv.URL), WithTimeout(300*time.Millisecond))
+	defer strict.Close()
+	start := time.Now()
+	if _, err := strict.DoRaw(context.Background(), http.MethodGet, "/stream", nil); err == nil {
+		t.Fatal("expected read timeout for slow response without WithStream, got nil")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("对照组应快速失败（300ms 级），实际 %v", elapsed)
+	}
+
+	// 实验组：WithStream 关读超时（保留拨号预算）——同一慢响应可读完
+	streaming := MustNewClient("test",
+		WithBaseURL(srv.URL),
+		WithTimeout(300*time.Millisecond), // 拨号预算保留
+		WithStream(),                      // 读超时关闭（后置覆盖）
+	)
+	defer streaming.Close()
+	got, err := streaming.DoRaw(context.Background(), http.MethodGet, "/stream", nil)
+	if err != nil {
+		t.Fatalf("WithStream 后慢响应仍被掐断: %v", err)
+	}
+	if string(got) != "chunk1;chunk2" {
+		t.Errorf("body = %q, want %q", got, "chunk1;chunk2")
+	}
+}
+
+// TestWithStream_LeavesDialTimeoutIntact WithStream 只关读超时，拨号超时
+// 保留（建连仍受预算约束——选项装配面的确定性断言）。
+func TestWithStream_LeavesDialTimeoutIntact(t *testing.T) {
+	c := MustNewClient("test",
+		WithTimeout(2*time.Second),
+		WithStream(),
+	)
+	defer c.Close()
+	opts := c.Hertz().GetOptions()
+	if got := opts.DialTimeout; got != 2*time.Second {
+		t.Errorf("DialTimeout = %v, want 2s（WithStream 不应动拨号超时）", got)
+	}
+	if got := opts.ReadTimeout; got != 0 {
+		t.Errorf("ReadTimeout = %v, want 0（WithStream 应关读超时）", got)
+	}
+}

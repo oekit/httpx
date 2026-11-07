@@ -48,6 +48,28 @@ status, body, err := c.DoDetail(ctx, http.MethodPost, "/api/v1/pay", req)
 // 非 2xx: status、body 仍有值，err 为 *ServiceError
 ```
 
+## 超时与流式响应
+
+默认注入 30s 拨号/读超时——**只适合短请求**。读超时对响应是「30s 内读完」
+的硬顶，SSE 转发、k8s proxy 长连接、WS 升级这类流式响应会被静默掐断
+（症状是连接被远端/代理切断，极难归因到客户端读超时）。流式场景必须
+显式关读超时：
+
+```go
+// WithStream：关读超时 + 保留拨号超时（流式的总时长预算由调用方经 ctx 控制）
+c, err := httpx.NewClient("k8s-proxy", httpx.WithStream())
+```
+
+超时语义族（#87/#90/#92）：
+
+| 意图 | 写法 |
+| --- | --- |
+| 拨号+读取各以 d 为上限（WithTimeout 语义） | `WithTimeout(d)` |
+| 只调读超时、保留 30s 拨号 | `WithHertzOption(client.WithClientReadTimeout(d))` |
+| 只调拨号超时 | `WithHertzOption(client.WithDialTimeout(d))` |
+| 写超时 | `WithHertzOption(client.WithWriteTimeout(d))` |
+| 流式（关读超时、保留拨号） | `WithStream()` |
+
 ## 出站 SSRF 防护
 
 调用方 URL 来自不受信输入时（用户配置的回调/推送地址、任意外链抓取、

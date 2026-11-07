@@ -46,6 +46,23 @@
 //
 //	status, body, err := client.DoDetail(ctx, http.MethodPost, "/api/users", req)
 //
+// # 流式响应与超时语义
+//
+// 默认配置注入 30s 拨号/读超时——**只适合短请求**。读超时是「响应必须
+// 在 30s 内读完」的硬顶，对流式响应（SSE 转发、k8s proxy 长连接、WS
+// 升级、chunked 大响应）会静默掐断长流（症状是连接被远端/代理切断，
+// 极难归因到客户端读超时）。流式场景必须显式关读超时：
+//
+//	client, err := ehttp.NewClient("k8s-proxy",
+//	    ehttp.WithStream(), // 关读超时 + 保留拨号超时（#87）
+//	)
+//
+// 超时语义族：WithTimeout(d) 同时覆盖拨号与读取（各以 d 为独立上限，
+// 非全生命周期总预算）；仅调读/拨号单项经 WithHertzOption
+// (client.WithClientReadTimeout / WithDialTimeout)；写超时经
+// WithHertzOption(client.WithWriteTimeout)。流式的总时长预算由调用方经
+// ctx 控制。
+//
 // # 出站 SSRF 防护
 //
 // 调用方 URL 来自不受信输入时做两层检查：URL 层字面量拒绝内网 IP/主机名；

@@ -87,6 +87,29 @@ func WithCookieJar(jar http.CookieJar) ClientOption {
 	return func(c *Client) { c.cookieJar = jar }
 }
 
+// WithStream 流式响应预设（#87）：关闭读超时（默认 30s 只适合短请求——
+// 读超时与流式语义直接冲突，30s 硬顶会把任何长流掐死，症状是连接被远端/
+// 代理静默切断、极难归因到客户端），保留拨号超时（建连阶段仍需兜底）。
+//
+// 适用面：SSE 转发、k8s proxy/长连接代理、WS 升级、chunked 大响应。
+// 等价于 WithHertzOption(client.WithClientReadTimeout(0)) 的固化预设——
+// 把「流式要关什么」的知识固化进库，不必每个消费方自己拼逃生舱选项。
+//
+// 语义与边界：
+//   - 与 WithTimeout 按 option 顺序后者覆盖（都是 append 到 hzOpts）：
+//     「预算拨号 + 不限读」写 WithTimeout(d), WithStream()；
+//     「都不限」只写 WithStream()；
+//   - 流的总时长预算由调用方经 ctx 控制（context.WithTimeout），引擎层
+//     不替流式请求做整段超时；
+//   - 引擎层 Client 的响应体是全量缓冲语义（GetJSON/DoRaw 返回时 body
+//     已读尽）；真正的逐块消费经 net/http 桥接（StdClient + 本预设），
+//     或直接用注入低阶 client 的 DoOnce。
+func WithStream() ClientOption {
+	return func(c *Client) {
+		c.hzOpts = append(c.hzOpts, client.WithClientReadTimeout(0))
+	}
+}
+
 // WithTLSSkipVerify 跳过 TLS 证书验证。
 func WithTLSSkipVerify() ClientOption {
 	return func(c *Client) {
