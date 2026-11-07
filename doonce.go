@@ -38,7 +38,10 @@ func DoOnce(ctx context.Context, hc *http.Client, req *http.Request) (status int
 		req = req.WithContext(ctx)
 	}
 
-	resp, err := hc.Do(req)
+	// G704（taint：目标 URL 来自入参）是本原语的设计前提而非缺陷：client
+	// 与请求目标都由宿主注入，SSRF 防护挂在注入 client 的 Transport 上
+	// （如 WithSafeDial 的 urlguard 拨号拦截），库级不替宿主做拦截。
+	resp, err := hc.Do(req) //nolint:gosec // G704: 目标由调用方注入，防护在注入的 client 上（见上）
 	if err != nil {
 		return 0, nil, err
 	}
