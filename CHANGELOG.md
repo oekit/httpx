@@ -1,3 +1,9 @@
+## [v0.8.14] — 2026-11-08
+
+- docs(request): #102 收口——该单为 #86 的重报（UploadFile 不读文件恒传空 part、filename 泄漏完整本地路径），修复已随 v0.8.12（PR #93）落地（`os.ReadFile` + `filepath.Base`，含内容/文件名/读失败三方回归测试）；本版把 request.go 与回归测试的注释标注对齐重报单号，无行为变更
+
+关联问题单：httpx#86、httpx#102。
+
 ## [v0.8.13] — 2026-11-07
 
 - build: 依赖地板对齐 logx v0.8.6

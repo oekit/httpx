@@ -786,7 +786,7 @@ func TestClient_Close_ReleasesIdleConnections(t *testing.T) {
 	c.Close() // 幂等：重复 Close 不 panic
 }
 
-// TestUploadFile_UploadsFileContent 回归（#86）：UploadFile 必须读取本地文件
+// TestUploadFile_UploadsFileContent 回归（#86，重报 #102）：UploadFile 必须读取本地文件
 // 内容作为文件 part——修复前 data 恒传 nil，上传请求成功发出但文件 part
 // 内容恒为空（空文件），且 part filename 是完整本地路径（泄漏服务器目录
 // 结构）。本测试断言服务端实际收到的文件名（base 名）与内容。
@@ -852,7 +852,7 @@ func TestUploadFile_UploadsFileContent(t *testing.T) {
 	}
 }
 
-// TestUploadFile_MissingFileError 回归（#86）：文件读取失败显式报错
+// TestUploadFile_MissingFileError 回归（#86，重报 #102）：文件读取失败显式报错
 // （修复前不读文件，错误无从暴露）。
 func TestUploadFile_MissingFileError(t *testing.T) {
 	c := MustNewClient("test", WithBaseURL("http://127.0.0.1:1"))
