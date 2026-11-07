@@ -1,3 +1,7 @@
+## [v0.8.13] — 2026-11-07
+
+- build: 依赖地板对齐 logx v0.8.6
+
 ## [v0.8.12] — 2026-11-07
 
 - feat(client): NewClient 构造失败显式返回 (*Client, error) + MustNewClient——与家族「错误显式返回」契约对齐（BREAKING，PR #93）（#83）
