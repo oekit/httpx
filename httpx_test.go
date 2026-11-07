@@ -76,6 +76,35 @@ func TestWithTimeout(t *testing.T) {
 	}
 }
 
+// TestWithTimeout_CoversDialAndRead 回归（#90/#92）：WithTimeout 的超时预算
+// 必须同时落到拨号与读两个阶段——修复前仅设 ReadTimeout，拨号沿用 hertz
+// 默认 30s：WithTimeout(100ms) 对不可达主机的请求仍可挂 30s，配置
+// 「timeout=3s」的排障方向从第一步就错。
+func TestWithTimeout_CoversDialAndRead(t *testing.T) {
+	const budget = 1200 * time.Millisecond
+	c := MustNewClient("test", WithTimeout(budget))
+	opts := c.Hertz().GetOptions()
+	if got := opts.DialTimeout; got != budget {
+		t.Errorf("DialTimeout = %v, want %v（拨号不受 WithTimeout 控制）", got, budget)
+	}
+	if got := opts.ReadTimeout; got != budget {
+		t.Errorf("ReadTimeout = %v, want %v", got, budget)
+	}
+}
+
+// TestWithTimeout_DefaultsKeptWithoutOption 未设置 WithTimeout 时保持
+// hertz 默认 30s 拨号/读超时（缺省行为不因语义补全漂移）。
+func TestWithTimeout_DefaultsKeptWithoutOption(t *testing.T) {
+	c := MustNewClient("test")
+	opts := c.Hertz().GetOptions()
+	if got := opts.DialTimeout; got != 30*time.Second {
+		t.Errorf("default DialTimeout = %v, want 30s", got)
+	}
+	if got := opts.ReadTimeout; got != 30*time.Second {
+		t.Errorf("default ReadTimeout = %v, want 30s", got)
+	}
+}
+
 func TestWithBearerToken(t *testing.T) {
 	c := MustNewClient("test", WithBearerToken("my-token"))
 	if c.client == nil {

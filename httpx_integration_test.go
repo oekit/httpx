@@ -495,6 +495,51 @@ func TestNNSResolver_Resolve(t *testing.T) {
 	}
 }
 
+// TestNNSResolver_Resolve_SchemeFromMetadata 回归（#90）：实例地址 scheme
+// 从 Metadata 取（键 MetadataKeyScheme）——修复前硬编码 "http://"，注册
+// 中心实例无论元数据如何都被以明文 http 拨号，https 服务无法经 WithNNS
+// 接入。缺省与不认识的取值回落 http。
+func TestNNSResolver_Resolve_SchemeFromMetadata(t *testing.T) {
+	stub := &stubNNSClient{instances: []registry.Instance{
+		{IP: "10.0.0.1", Port: 8443, Metadata: map[string]string{"scheme": "https"}},
+		{IP: "10.0.0.2", Port: 8080}, // 无元数据：回落 http
+		{IP: "10.0.0.3", Port: 8080, Metadata: map[string]string{"scheme": "grpc"}},  // 非 HTTP 协议：回落 http（显式连接错误，不静默改写）
+		{IP: "10.0.0.4", Port: 8443, Metadata: map[string]string{"scheme": "HTTPS"}}, // 大小写不敏感
+	}}
+	r := NewNNSResolver("svc-a", stub)
+	got, err := r.Resolve(context.Background())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	want := []string{
+		"https://10.0.0.1:8443",
+		"http://10.0.0.2:8080",
+		"http://10.0.0.3:8080",
+		"https://10.0.0.4:8443",
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("endpoint[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestSelectorNodes_SchemeFromMetadata 回归（#90）：SelectorNodes 的节点
+// 地址同样从实例 Metadata 取 scheme（与 NNSResolver.Resolve 同源），
+// https 实例不再被硬编码明文 http。
+func TestSelectorNodes_SchemeFromMetadata(t *testing.T) {
+	nodes := SelectorNodes([]registry.Instance{
+		{Service: "svc", IP: "10.0.0.1", Port: 8443, Weight: 2, Metadata: map[string]string{"scheme": "https"}},
+		{Service: "svc", IP: "10.0.0.2", Port: 8080, Weight: 1},
+	})
+	if got := nodes[0].Address(); got != "https://10.0.0.1:8443" {
+		t.Errorf("node[0].Address() = %q, want https://10.0.0.1:8443", got)
+	}
+	if got := nodes[1].Address(); got != "http://10.0.0.2:8080" {
+		t.Errorf("node[1].Address() = %q, want http://10.0.0.2:8080", got)
+	}
+}
+
 func TestNNSResolver_ResolveError(t *testing.T) {
 	stub := &stubNNSClient{err: context.DeadlineExceeded}
 	r := NewNNSResolver("svc-a", stub)

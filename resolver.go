@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,11 +32,30 @@ type InstanceResolver interface {
 	ResolveInstances(ctx context.Context) ([]registry.Instance, error)
 }
 
+// MetadataKeyScheme 是实例协议的元数据键（#90）：注册中心实例经此声明
+// 对外协议，取值 "http"/"https"（大小写不敏感）；缺省或取值不认识时
+// 回落 "http"（与历史 endpoint 形态一致）。修复前地址硬编码 "http://"，
+// https 服务无法经 WithNNS 接入（无论元数据如何都被以明文 http 拨号）。
+const MetadataKeyScheme = "scheme"
+
+// instanceScheme 从实例 Metadata 取协议 scheme，缺省/非法回落 "http"。
+func instanceScheme(i registry.Instance) string {
+	if v := i.Metadata[MetadataKeyScheme]; v != "" {
+		switch strings.ToLower(v) {
+		case "http", "https":
+			return strings.ToLower(v)
+		}
+		// 其他协议（grpc 等）对 HTTP 客户端不可拨，同样回落 http——
+		// 选错协议的实例会以连接错误显式暴露，而不是静默改写地址
+	}
+	return "http"
+}
+
 // SelectorNodes 把注册中心实例切片适配为 Selector 节点（字段闭包映射，
-// 地址补 "http://" 前缀，与历史 endpoint 形态一致）。
+// 地址 scheme 从实例 Metadata 取（键 MetadataKeyScheme），缺省 "http"）。
 func SelectorNodes(insts []registry.Instance) []loadbalance.Node {
 	return loadbalance.NodesFrom(insts,
-		func(i registry.Instance) string { return "http://" + i.Addr() },
+		func(i registry.Instance) string { return instanceScheme(i) + "://" + i.Addr() },
 		func(i registry.Instance) float64 { return i.Weight },
 		func(i registry.Instance) map[string]string { return i.Metadata },
 		func(i registry.Instance) string { return i.Service },
@@ -234,7 +254,8 @@ func NewNNSResolver(serviceName string, nnsClient NNSClient) *NNSResolver {
 	}
 }
 
-// ResolveInstances 解析服务名称，返回实例列表（地址合成 "http://ip:port"）。
+// ResolveInstances 解析服务名称，返回实例列表（地址 scheme 从实例
+// Metadata 取，键 MetadataKeyScheme，缺省 "http"，#90）。
 // 透传 context 到 NNS，保留超时和 trace_id 语义。
 func (r *NNSResolver) ResolveInstances(ctx context.Context) ([]registry.Instance, error) {
 	instances, err := r.nnsClient.GetInstances(ctx, r.serviceName)
@@ -247,7 +268,8 @@ func (r *NNSResolver) ResolveInstances(ctx context.Context) ([]registry.Instance
 	return instances, nil
 }
 
-// Resolve 解析服务名称，返回地址列表（丢弃权重与元数据）。
+// Resolve 解析服务名称，返回地址列表（丢弃权重与元数据；地址 scheme 从
+// 实例 Metadata 取，缺省 "http"，#90）。
 func (r *NNSResolver) Resolve(ctx context.Context) ([]string, error) {
 	instances, err := r.ResolveInstances(ctx)
 	if err != nil {
@@ -255,7 +277,7 @@ func (r *NNSResolver) Resolve(ctx context.Context) ([]string, error) {
 	}
 	endpoints := make([]string, len(instances))
 	for i, inst := range instances {
-		endpoints[i] = "http://" + net.JoinHostPort(inst.IP, strconv.Itoa(inst.Port))
+		endpoints[i] = instanceScheme(inst) + "://" + net.JoinHostPort(inst.IP, strconv.Itoa(inst.Port))
 	}
 	return endpoints, nil
 }

@@ -45,10 +45,25 @@ func WithBaseURL(u string) ClientOption {
 	return func(c *Client) { c.baseURL = u }
 }
 
-// WithTimeout 设置 HTTP 请求超时时间。
+// WithTimeout 设置 HTTP 请求超时预算，同时覆盖**拨号**与**响应读取**两个
+// 阶段（#90/#92）：`WithTimeout(3s)` 对不可达主机（黑洞路由/半开连接）在
+// 拨号阶段即 3s 超时——修复前仅设读超时，拨号沿用 hertz 默认 30s，调用方
+// 以为的 3s 实际可等 33s。
+//
+// 语义边界（超时语义族，另见 #87 的流式说明）：
+//   - 覆盖面 = DialTimeout + ReadTimeout，各以 d 为独立上限（不是串行叠加
+//     的总预算；与标准库 http.Client{Timeout} 的全生命周期覆盖不同——
+//     TLS 握手计入拨号阶段，写超时不单独设，可经逃生舱
+//     WithHertzOption(client.WithWriteTimeout(d)) 补充）；
+//   - 仅想调读超时、保留 30s 拨号上限：WithHertzOption(client.WithClientReadTimeout(d))；
+//   - 仅想调拨号：WithHertzOption(client.WithDialTimeout(d))；
+//   - 流式响应（SSE/代理长连接/WS 升级）不能用整段读超时掐流，用 WithStream。
 func WithTimeout(d time.Duration) ClientOption {
 	return func(c *Client) {
-		c.hzOpts = append(c.hzOpts, client.WithClientReadTimeout(d))
+		c.hzOpts = append(c.hzOpts,
+			client.WithDialTimeout(d),
+			client.WithClientReadTimeout(d),
+		)
 	}
 }
 
