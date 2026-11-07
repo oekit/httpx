@@ -333,8 +333,20 @@ func WithRetryIfFunc(fn func(req *protocol.Request, resp *protocol.Response, err
 }
 
 // WithEndpoints 设置静态 endpoint 列表。
+//
+// 与动态服务发现（WithNNS/WithServiceResolver）互斥（#89）：组合使用时
+// 静态端点会被动态刷新循环在下一个刷新周期覆盖（或静态端点被静默丢弃），
+// 行为随 option 顺序漂移且无告警——组合直接构造期报错（NewClient 返回
+// error）。一个 Client 只能有一种端点来源；需要静态兜底 + 动态发现的
+// 组合语义由 EndpointManager 的缓存降级提供（resolver 失败时保留快照）。
 func WithEndpoints(endpoints ...string) ClientOption {
 	return func(c *Client) {
+		if c.endpointManager != nil && c.endpointManager.resolver != nil {
+			c.setConstructErr(errors.New(
+				"httpx: WithEndpoints 与动态服务发现（WithNNS/WithServiceResolver）互斥：静态端点会被刷新循环覆盖，一个 Client 只能有一种端点来源"))
+			return
+		}
+		c.staticEndpoints = true
 		if c.endpointManager == nil {
 			c.endpointManager = c.newEndpointManager(nil, 0)
 		}
@@ -345,16 +357,34 @@ func WithEndpoints(endpoints ...string) ClientOption {
 // WithNNS 启用 NNS 服务发现。
 func WithNNS(serviceName string, nnsClient NNSClient) ClientOption {
 	return func(c *Client) {
-		resolver := NewNNSResolver(serviceName, nnsClient)
-		c.endpointManager = c.newEndpointManager(resolver, 30*time.Second)
+		c.setDynamicResolver(NewNNSResolver(serviceName, nnsClient))
 	}
 }
 
 // WithServiceResolver 设置自定义服务发现解析器。
 func WithServiceResolver(resolver ServiceResolver) ClientOption {
 	return func(c *Client) {
-		c.endpointManager = c.newEndpointManager(resolver, 30*time.Second)
+		c.setDynamicResolver(resolver)
 	}
+}
+
+// setDynamicResolver 安装动态 resolver 并创建带刷新循环的 EndpointManager
+// （#89）：
+//   - 替换已存在的 EndpointManager 前先 Stop 旧实例——旧 manager 若带刷新
+//     循环，其 refreshLoop goroutine/ticker 会一直跑到进程退出（组合 option
+//     反复替换时逐个泄漏）；
+//   - 与静态端点（WithEndpoints）互斥：动态发现会静默丢弃静态端点，
+//     构造期报错（NewClient 返回 error），行为不再随 option 顺序漂移。
+func (c *Client) setDynamicResolver(resolver ServiceResolver) {
+	if c.staticEndpoints {
+		c.setConstructErr(errors.New(
+			"httpx: WithNNS/WithServiceResolver 与静态端点（WithEndpoints）互斥：一个 Client 只能有一种端点来源"))
+		return
+	}
+	if c.endpointManager != nil {
+		c.endpointManager.Stop()
+	}
+	c.endpointManager = c.newEndpointManager(resolver, 30*time.Second)
 }
 
 // WithRefreshInterval 设置 endpoint 刷新间隔。

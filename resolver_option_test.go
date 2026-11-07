@@ -2,6 +2,7 @@ package httpx
 
 import (
 	"context"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -113,5 +114,104 @@ func TestPriorityQueue_ReleaseUnknownPriority(t *testing.T) {
 	// 释放后容量恢复，可再次获取
 	if !q.Acquire(ctx, PriorityNormal) {
 		t.Error("Acquire after Release = false, want true")
+	}
+}
+
+// TestOptionOrder_DynamicResolverReplaceStopsOldLoop 回归（#89）：组合
+// option 反复替换 EndpointManager 时，旧 manager 的刷新循环必须随替换
+// 停止——修复前 WithNNS/WithServiceResolver 直接覆盖 endpointManager，
+// 旧 refreshLoop goroutine 每 30s 继续打旧 resolver 直到进程退出。
+func TestOptionOrder_DynamicResolverReplaceStopsOldLoop(t *testing.T) {
+	old := &countingResolver{}
+	fresh := &countingResolver{}
+	c := MustNewClient("svc",
+		WithRefreshInterval(10*time.Millisecond),
+		WithServiceResolver(old),
+		WithServiceResolver(fresh),
+	)
+	defer c.Close()
+
+	// 新 manager 的刷新循环已跑起来（fresh 被解析 >= 3 次）
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && fresh.calls.Load() < 3 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := fresh.calls.Load(); got < 3 {
+		t.Fatalf("新 resolver 在期限内仅被调用 %d 次，刷新循环未启动", got)
+	}
+
+	// 旧 manager 的刷新循环已停：old 的计数在观察窗口内不再增长
+	// （修复前 old 的 refreshLoop 每 10ms 继续打点，窗口内必然增长）
+	base := old.calls.Load()
+	stableDeadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(stableDeadline) {
+		if got := old.calls.Load(); got != base {
+			t.Fatalf("旧 EndpointManager 的刷新循环未随替换停止：resolver 调用 %d → %d（goroutine 泄漏）", base, got)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestOptionOrder_EndpointsAndDynamicMutuallyExclusive 回归（#89）：
+// WithEndpoints 与动态 resolver 互斥，构造期报错（NewClient 返回 error），
+// 不再随 option 顺序漂移——「动态在前」时静态端点每 30s 被 NNS 结果覆盖，
+// 「静态在前」时静态端点被动态 manager 静默丢弃。
+func TestOptionOrder_EndpointsAndDynamicMutuallyExclusive(t *testing.T) {
+	cases := []struct {
+		name string
+		opts []ClientOption
+	}{
+		{
+			name: "动态在前静态在后（静态端点会被刷新循环覆盖）",
+			opts: []ClientOption{
+				WithServiceResolver(&countingResolver{}),
+				WithEndpoints("http://10.0.0.1:8080"),
+			},
+		},
+		{
+			name: "静态在前动态在后（静态端点被静默丢弃）",
+			opts: []ClientOption{
+				WithEndpoints("http://10.0.0.1:8080"),
+				WithServiceResolver(&countingResolver{}),
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := NewClient("svc", tc.opts...)
+			if err == nil {
+				c.Close()
+				t.Fatal("期望构造期报错（静态端点与动态 resolver 互斥），got nil")
+			}
+			if c != nil {
+				t.Errorf("期望错误路径返回 nil client，got %v", c)
+			}
+			if !strings.Contains(err.Error(), "互斥") {
+				t.Errorf("错误信息应指明互斥原因，got %q", err.Error())
+			}
+		})
+	}
+}
+
+// TestNewClient_ConflictErrorStopsManager 回归（#89）：构造期冲突报错的
+// 路径上，此前 option 已创建的 EndpointManager（带刷新循环）必须被 Stop——
+// 错误路径不允许泄漏 goroutine。
+func TestNewClient_ConflictErrorStopsManager(t *testing.T) {
+	resolver := &countingResolver{}
+	_, err := NewClient("svc",
+		WithRefreshInterval(10*time.Millisecond),
+		WithServiceResolver(resolver),
+		WithEndpoints("http://10.0.0.1:8080"),
+	)
+	if err == nil {
+		t.Fatal("期望构造期报错")
+	}
+
+	// 收敛窗口：潜在的 straggler 首刷落地（80ms >> 10ms 刷新间隔的多个周期）
+	time.Sleep(80 * time.Millisecond)
+	base := resolver.calls.Load()
+	time.Sleep(200 * time.Millisecond)
+	if got := resolver.calls.Load(); got != base {
+		t.Fatalf("构造错误路径泄漏刷新循环：resolver 调用 %d → %d（200ms 观察窗口）", base, got)
 	}
 }

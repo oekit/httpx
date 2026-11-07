@@ -88,12 +88,24 @@ func NewEndpointManager(resolver ServiceResolver, selector loadbalance.Selector,
 
 // refreshLoop 刷新循环。
 func (m *EndpointManager) refreshLoop(ctx context.Context) {
+	// 构造后立即被 Stop（如 option 冲突导致 NewClient 报错的路径）时
+	// 不做首次刷新——Stop 已经要求「从现在起不再有副作用」
+	select {
+	case <-m.stopRefresh:
+		return
+	case <-ctx.Done():
+		return
+	default:
+	}
+
 	// 立即刷新一次
 	m.refreshNodes(ctx)
 
 	for {
 		select {
 		case <-m.stopRefresh:
+			return
+		case <-ctx.Done():
 			return
 		case <-m.refreshTicker.C:
 			m.refreshNodes(ctx)

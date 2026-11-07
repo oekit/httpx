@@ -40,6 +40,7 @@ type Client struct {
 	retryIf                func(req *protocol.Request, resp *protocol.Response, err error) bool
 	retryIfExplicit        bool  // 用户是否显式设置过重试谓词（WithRetryIfFunc）
 	hasBreaker             bool  // WithCircuitBreaker 是否装配（熔断 gauge 初始化用）
+	staticEndpoints        bool  // WithEndpoints 是否装配过（与动态 resolver 互斥判定，#89）
 	constructErr           error // 构造期配置冲突（首个生效），NewClient 汇总返回（#83）
 }
 
