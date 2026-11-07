@@ -14,6 +14,9 @@
 //   - net/http 桥接层：NewRoundTripper/StdClient——存量标准库调用方一行
 //     Transport 即接入熔断/重试/指标/链路（重试缺省关、显式开）
 //   - WithDialFunc/WithHertzOption：拨号层拦截与 Hertz 原生选项透传（SSRF 防护）
+//   - WithStream：流式响应预设（关读超时、保留拨号超时）
+//   - DoOnce：client 可注入的低阶一次性请求原语（构造→发出→读尽→返回
+//     status/body；无重试/熔断，弹性语义单点在引擎层）
 //
 // # 快速接入
 //

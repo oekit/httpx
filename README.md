@@ -24,7 +24,10 @@ go get github.com/oekit/httpx@v0.8.11
 - `WithMetrics`：Prometheus 弹性指标（熔断/重试计数）
 - `WithTracePropagation`：OTel 链路透传
 - `WithDialFunc` / `WithHertzOption`：拨号层/原生 Hertz 选项透传（出站 SSRF 防护）
+- `WithStream`：流式响应预设（关读超时、保留拨号超时，SSE/代理/WS 适用）
 - `DoDetail`：返回 status + 原始 body（2xx 也带 body，区别于 DoJSON）
+- `DoOnce`：client 可注入的低阶一次性请求原语（共享 `*http.Client` +
+  轻量骨架的收敛点，无重试/熔断——弹性语义单点在引擎层）
 - 实例权重贯通：注册中心的权重配置真实生效于负载均衡
 
 ## 快速使用
