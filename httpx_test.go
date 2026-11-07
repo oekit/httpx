@@ -13,7 +13,7 @@ import (
 )
 
 func TestNewClient_DefaultTimeout(t *testing.T) {
-	c := NewClient("test")
+	c := MustNewClient("test")
 	if c.client == nil {
 		t.Error("expected non-nil client")
 	}
@@ -22,36 +22,105 @@ func TestNewClient_DefaultTimeout(t *testing.T) {
 	}
 }
 
+// TestNewClient_ConstructErrorExplicitReturn 回归（#83）：构造失败显式返回
+// error 而非 panic——与家族 gormx.Open / core/config.LoadFile 的「错误显式
+// 返回」契约一致。此处直接经构造期错误管道注入错误（构造期冲突的端到端
+// 路径见 #89 的互斥测试）。
+func TestNewClient_ConstructErrorExplicitReturn(t *testing.T) {
+	c, err := NewClient("svc", func(c *Client) {
+		c.setConstructErr(errors.New("construct boom"))
+	})
+	if err == nil {
+		t.Fatal("expected explicit error, got nil")
+	}
+	if c != nil {
+		t.Errorf("expected nil client on error, got %v", c)
+	}
+	if err.Error() != "construct boom" {
+		t.Errorf("expected injected error message, got %q", err.Error())
+	}
+}
+
+// TestMustNewClient_PanicsOnConstructError 回归（#83）：MustNewClient 在构造
+// 失败时 panic 且携带完整错误——确认构造参数静态合法场景的一行迁移路径。
+func TestMustNewClient_PanicsOnConstructError(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic, got none")
+		}
+		err, ok := r.(error)
+		if !ok {
+			t.Fatalf("panic value should be error, got %T", r)
+		}
+		if err.Error() != "construct boom" {
+			t.Errorf("expected injected error message, got %q", err.Error())
+		}
+	}()
+	MustNewClient("svc", func(c *Client) {
+		c.setConstructErr(errors.New("construct boom"))
+	})
+}
+
 func TestWithBaseURL(t *testing.T) {
-	c := NewClient("test", WithBaseURL("http://example.com"))
+	c := MustNewClient("test", WithBaseURL("http://example.com"))
 	if c.baseURL != "http://example.com" {
 		t.Errorf("expected 'http://example.com', got %q", c.baseURL)
 	}
 }
 
 func TestWithTimeout(t *testing.T) {
-	c := NewClient("test", WithTimeout(5*time.Second))
+	c := MustNewClient("test", WithTimeout(5*time.Second))
 	if c.client == nil {
 		t.Error("expected non-nil client")
 	}
 }
 
+// TestWithTimeout_CoversDialAndRead 回归（#90/#92）：WithTimeout 的超时预算
+// 必须同时落到拨号与读两个阶段——修复前仅设 ReadTimeout，拨号沿用 hertz
+// 默认 30s：WithTimeout(100ms) 对不可达主机的请求仍可挂 30s，配置
+// 「timeout=3s」的排障方向从第一步就错。
+func TestWithTimeout_CoversDialAndRead(t *testing.T) {
+	const budget = 1200 * time.Millisecond
+	c := MustNewClient("test", WithTimeout(budget))
+	opts := c.Hertz().GetOptions()
+	if got := opts.DialTimeout; got != budget {
+		t.Errorf("DialTimeout = %v, want %v（拨号不受 WithTimeout 控制）", got, budget)
+	}
+	if got := opts.ReadTimeout; got != budget {
+		t.Errorf("ReadTimeout = %v, want %v", got, budget)
+	}
+}
+
+// TestWithTimeout_DefaultsKeptWithoutOption 未设置 WithTimeout 时保持
+// hertz 默认 30s 拨号/读超时（缺省行为不因语义补全漂移）。
+func TestWithTimeout_DefaultsKeptWithoutOption(t *testing.T) {
+	c := MustNewClient("test")
+	opts := c.Hertz().GetOptions()
+	if got := opts.DialTimeout; got != 30*time.Second {
+		t.Errorf("default DialTimeout = %v, want 30s", got)
+	}
+	if got := opts.ReadTimeout; got != 30*time.Second {
+		t.Errorf("default ReadTimeout = %v, want 30s", got)
+	}
+}
+
 func TestWithBearerToken(t *testing.T) {
-	c := NewClient("test", WithBearerToken("my-token"))
+	c := MustNewClient("test", WithBearerToken("my-token"))
 	if c.client == nil {
 		t.Error("expected non-nil client")
 	}
 }
 
 func TestWithDebug(t *testing.T) {
-	c := NewClient("test", WithDebug())
+	c := MustNewClient("test", WithDebug())
 	if c.client == nil {
 		t.Error("expected non-nil client")
 	}
 }
 
 func TestWithCircuitBreaker(t *testing.T) {
-	c := NewClient("test", WithCircuitBreaker("cb-test", gobreaker.Settings{
+	c := MustNewClient("test", WithCircuitBreaker("cb-test", gobreaker.Settings{
 		Interval: 10 * time.Second,
 	}))
 	if c.client == nil {
@@ -106,7 +175,7 @@ func TestHandleResponse_Success(t *testing.T) {
 }
 
 func TestNewClient_WithMetrics(t *testing.T) {
-	c := NewClient("test", WithMetrics(nil, "test_ns"))
+	c := MustNewClient("test", WithMetrics(nil, "test_ns"))
 	if c.metrics == nil {
 		t.Error("expected non-nil metrics")
 	}
@@ -142,14 +211,14 @@ func TestNewClient_WithMetrics_DuplicateRegistration(t *testing.T) {
 }
 
 func TestWithTarget(t *testing.T) {
-	c := NewClient("test", WithTarget("user-service"))
+	c := MustNewClient("test", WithTarget("user-service"))
 	if got := c.targetLabel(); got != "user-service" {
 		t.Errorf("expected target 'user-service', got %q", got)
 	}
 }
 
 func TestSetTarget(t *testing.T) {
-	c := NewClient("test")
+	c := MustNewClient("test")
 	if got := c.targetLabel(); got != defaultTargetLabel {
 		t.Errorf("expected empty initial target (%q), got %q", defaultTargetLabel, got)
 	}
@@ -182,14 +251,14 @@ func TestRecordMetrics_DefaultTarget(t *testing.T) {
 
 func TestUploadFile_NotPanic(t *testing.T) {
 	// Just verify the method exists and the client can be created
-	c := NewClient("test")
+	c := MustNewClient("test")
 	if c == nil {
 		t.Error("expected non-nil client")
 	}
 }
 
 func TestClient_Hertz(t *testing.T) {
-	c := NewClient("test")
+	c := MustNewClient("test")
 	if c.Hertz() == nil {
 		t.Error("expected non-nil hertz client")
 	}
@@ -197,7 +266,7 @@ func TestClient_Hertz(t *testing.T) {
 
 func TestGetJSON_NilRequest(t *testing.T) {
 	// Hertz client requires non-nil context. Verify cancelled context returns error without panic.
-	c := NewClient("test", WithBaseURL("http://localhost:1"))
+	c := MustNewClient("test", WithBaseURL("http://localhost:1"))
 	// This will fail with cancelled context error, but should not panic
 	// Hertz client requires non-nil context (same as net/http).
 	ctx, cancel := context.WithCancel(context.Background())
@@ -207,7 +276,7 @@ func TestGetJSON_NilRequest(t *testing.T) {
 }
 
 func TestNewClient_ComposedOptions(t *testing.T) {
-	c := NewClient("test",
+	c := MustNewClient("test",
 		WithBaseURL("http://example.com"),
 		WithTimeout(10*time.Second),
 		WithBearerToken("token"),
@@ -227,7 +296,7 @@ func TestNewClient_ComposedOptions(t *testing.T) {
 
 // Ensure the correct HTTP methods are available
 func TestHTTPMethodsExist(t *testing.T) {
-	c := NewClient("test")
+	c := MustNewClient("test")
 	// These should compile (method existence check)
 	_ = c.GetJSON
 	_ = c.PostJSON
@@ -241,7 +310,7 @@ func TestHTTPMethodsExist(t *testing.T) {
 // Test that the package-level functions exist
 func TestWithCircuitBreaker_CallbackPreservation(t *testing.T) {
 	var stateChanged bool
-	c := NewClient("test", WithCircuitBreaker("cb", gobreaker.Settings{
+	c := MustNewClient("test", WithCircuitBreaker("cb", gobreaker.Settings{
 		Interval: 10 * time.Second,
 		OnStateChange: func(name string, from, to gobreaker.State) {
 			stateChanged = true
@@ -256,14 +325,14 @@ func TestWithCircuitBreaker_CallbackPreservation(t *testing.T) {
 }
 
 func TestWithTLSSkipVerify(t *testing.T) {
-	c := NewClient("test", WithTLSSkipVerify())
+	c := MustNewClient("test", WithTLSSkipVerify())
 	if c == nil {
 		t.Error("expected non-nil client")
 	}
 }
 
 func TestWithBasicAuth(t *testing.T) {
-	c := NewClient("test", WithBasicAuth("user", "pass"))
+	c := MustNewClient("test", WithBasicAuth("user", "pass"))
 	if c == nil {
 		t.Error("expected non-nil client")
 	}
@@ -415,14 +484,14 @@ func TestEndpointManager(t *testing.T) {
 }
 
 func TestWithEndpoints(t *testing.T) {
-	c := NewClient("test", WithEndpoints("http://1.1.1.1", "http://2.2.2.2"))
+	c := MustNewClient("test", WithEndpoints("http://1.1.1.1", "http://2.2.2.2"))
 	if c.endpointManager == nil {
 		t.Error("expected endpointManager to be set")
 	}
 }
 
 func TestClient_Close(t *testing.T) {
-	c := NewClient("test", WithEndpoints("http://1.1.1.1"))
+	c := MustNewClient("test", WithEndpoints("http://1.1.1.1"))
 	c.Close()
 	// 不应该 panic
 }

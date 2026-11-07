@@ -45,10 +45,25 @@ func WithBaseURL(u string) ClientOption {
 	return func(c *Client) { c.baseURL = u }
 }
 
-// WithTimeout 设置 HTTP 请求超时时间。
+// WithTimeout 设置 HTTP 请求超时预算，同时覆盖**拨号**与**响应读取**两个
+// 阶段（#90/#92）：`WithTimeout(3s)` 对不可达主机（黑洞路由/半开连接）在
+// 拨号阶段即 3s 超时——修复前仅设读超时，拨号沿用 hertz 默认 30s，调用方
+// 以为的 3s 实际可等 33s。
+//
+// 语义边界（超时语义族，另见 #87 的流式说明）：
+//   - 覆盖面 = DialTimeout + ReadTimeout，各以 d 为独立上限（不是串行叠加
+//     的总预算；与标准库 http.Client{Timeout} 的全生命周期覆盖不同——
+//     TLS 握手计入拨号阶段，写超时不单独设，可经逃生舱
+//     WithHertzOption(client.WithWriteTimeout(d)) 补充）；
+//   - 仅想调读超时、保留 30s 拨号上限：WithHertzOption(client.WithClientReadTimeout(d))；
+//   - 仅想调拨号：WithHertzOption(client.WithDialTimeout(d))；
+//   - 流式响应（SSE/代理长连接/WS 升级）不能用整段读超时掐流，用 WithStream。
 func WithTimeout(d time.Duration) ClientOption {
 	return func(c *Client) {
-		c.hzOpts = append(c.hzOpts, client.WithClientReadTimeout(d))
+		c.hzOpts = append(c.hzOpts,
+			client.WithDialTimeout(d),
+			client.WithClientReadTimeout(d),
+		)
 	}
 }
 
@@ -70,6 +85,29 @@ func WithBasicAuth(user, password string) ClientOption {
 // 对全部请求路径生效（含裸 Hertz().Do）。
 func WithCookieJar(jar http.CookieJar) ClientOption {
 	return func(c *Client) { c.cookieJar = jar }
+}
+
+// WithStream 流式响应预设（#87）：关闭读超时（默认 30s 只适合短请求——
+// 读超时与流式语义直接冲突，30s 硬顶会把任何长流掐死，症状是连接被远端/
+// 代理静默切断、极难归因到客户端），保留拨号超时（建连阶段仍需兜底）。
+//
+// 适用面：SSE 转发、k8s proxy/长连接代理、WS 升级、chunked 大响应。
+// 等价于 WithHertzOption(client.WithClientReadTimeout(0)) 的固化预设——
+// 把「流式要关什么」的知识固化进库，不必每个消费方自己拼逃生舱选项。
+//
+// 语义与边界：
+//   - 与 WithTimeout 按 option 顺序后者覆盖（都是 append 到 hzOpts）：
+//     「预算拨号 + 不限读」写 WithTimeout(d), WithStream()；
+//     「都不限」只写 WithStream()；
+//   - 流的总时长预算由调用方经 ctx 控制（context.WithTimeout），引擎层
+//     不替流式请求做整段超时；
+//   - 引擎层 Client 的响应体是全量缓冲语义（GetJSON/DoRaw 返回时 body
+//     已读尽）；真正的逐块消费经 net/http 桥接（StdClient + 本预设），
+//     或直接用注入低阶 client 的 DoOnce。
+func WithStream() ClientOption {
+	return func(c *Client) {
+		c.hzOpts = append(c.hzOpts, client.WithClientReadTimeout(0))
+	}
 }
 
 // WithTLSSkipVerify 跳过 TLS 证书验证。
@@ -240,13 +278,14 @@ func WithCircuitBreaker(name string, settings gobreaker.Settings) ClientOption {
 // ekit 固定注入 CombineDelay(BackOffDelayPolicy, RandomDelayPolicy):
 // 每次重试延迟 = initDelay<<attempts + [0, maxJitter) 随机抖动,MaxDelay 封顶。
 //
-// ⚠️ 重试触发条件(与 Hertz 默认不同):
+// ⚠️ 重试触发条件(与 Hertz 默认不同,带幂等方法门 #85):
 //
-//	Hertz 官方 DefaultRetryIf 仅在网络错误时重试,不重试 5xx 响应(只检查
-//	idempotent 方法 — 参见 vendor 源码 protocol/client/client.go:82)。
-//	ekit WithRetryConfig 默认同时重试 5xx + network error,语义对齐旧
-//	WithRetry(手写 middleware) 行为。如果需要更严格的条件(例如只重试
-//	GET/HEAD/OPTIONS/TRACE/特定状态码),可通过 WithRetryIfFunc 覆盖。
+//	Hertz 官方 DefaultRetryIf 仅在幂等方法 + 网络错误时重试,不重试 5xx。
+//	ekit WithRetryConfig 默认重试「幂等方法/无 body 请求」上的 5xx +
+//	network error——比 Hertz 宽(补 5xx),比旧版「不看方法一律重试」严。
+//	旧版默认对 POST 等**非幂等请求**的 5xx 无条件重放,网关恰好超时但
+//	后端已实际写入时会重复下单/重复创建——「保持兼容」不等于「安全默认」。
+//	需要放开旧语义(任何方法都重试)时,经 WithRetryIfFunc 显式声明。
 //
 // 官方依据:https://www.cloudwego.io/zh/docs/hertz/tutorials/basic-feature/client/
 // (Client 配置表 WithRetryConfig 示例明确列出 retry.WithDelayPolicy;
@@ -255,7 +294,7 @@ func WithCircuitBreaker(name string, settings gobreaker.Settings) ClientOption {
 //
 // 用法:
 //
-//	cli := httpx.NewClient("my-svc",
+//	cli, err := httpx.NewClient("my-svc",
 //	    httpx.WithRetryConfig(3, 100*time.Millisecond, 1*time.Second, 50*time.Millisecond),
 //	)
 func WithRetryConfig(maxAttempts uint, initDelay, maxDelay, maxJitter time.Duration) ClientOption {
@@ -272,33 +311,54 @@ func WithRetryConfig(maxAttempts uint, initDelay, maxDelay, maxJitter time.Durat
 				hertzretry.RandomDelayPolicy,
 			)),
 		))
-		// 默认 5xx + network error 都重试;ekit 旧 WithRetry 行为兼容。
+		// 默认重试条件：幂等方法门 + (5xx | network error)（#85）。
 		// RetryIfFunc 必须在 client.NewClient 之后通过 SetRetryIfFunc 设置,
 		// 所以这里只存到 c.retryIf,NewClient 末尾统一应用。
 		//
 		// **只有用户没有显式设置过谓词时才注入默认谓词**（#41）：两个 option
 		// 写同一个字段时，原本是「后写者赢」⇒ 把 WithRetryIfFunc 写在
-		// WithRetryConfig 之前就会让用户谓词被**无声丢弃**，退回这个**不看
-		// HTTP 方法**的默认谓词 ⇒ POST 在 5xx 上被自动重放（重复下单/
-		// 重复扣款级）。现在显式谓词永远赢，与 option 顺序无关。
+		// WithRetryConfig 之前就会让用户谓词被**无声丢弃**，退回默认谓词。
+		// 现在显式谓词永远赢，与 option 顺序无关。
 		if c.retryIfExplicit {
 			return
 		}
-		c.retryIf = func(_ *protocol.Request, resp *protocol.Response, err error) bool {
-			if err != nil {
-				return true
-			}
-			if resp != nil && resp.StatusCode() >= 500 {
-				return true
-			}
-			return false
-		}
+		c.retryIf = defaultRetryIf
 	}
 }
 
-// WithRetryIfFunc 覆盖 ekit 默认重试触发条件(5xx + network error),
-// 由用户传更严格的 predicate(例如只对 GET 重试、特定状态码范围等)。
-// 不调 WithRetryIfFunc 时,WithRetryConfig 注入默认 5xx + network error 条件。
+// defaultRetryIf 是 WithRetryConfig 注入的默认重试条件（#85）：
+//
+//	幂等方法/无 body 请求 && (network error | 5xx)
+//
+// 幂等门对 network error 同样生效——POST 超时时后端可能已收到并写入，
+// 重放与 5xx 重放同样是重复下单级风险。需要旧「不看方法」语义的调用方
+// 经 WithRetryIfFunc 显式放开。
+func defaultRetryIf(req *protocol.Request, resp *protocol.Response, err error) bool {
+	if req != nil && !idempotentForRetry(req) {
+		return false
+	}
+	if err != nil {
+		return true
+	}
+	return resp != nil && resp.StatusCode() >= 500
+}
+
+// idempotentForRetry 判定请求对默认重试是否安全：幂等方法（GET/HEAD/
+// OPTIONS/PUT/DELETE/TRACE，对齐 hertz isIdempotent 的方法集）或无 body
+// 请求（无 body 的 POST 重放无副作用面）。
+func idempotentForRetry(req *protocol.Request) bool {
+	switch string(req.Method()) {
+	case http.MethodGet, http.MethodHead, http.MethodOptions,
+		http.MethodPut, http.MethodDelete, http.MethodTrace:
+		return true
+	}
+	return len(req.Body()) == 0
+}
+
+// WithRetryIfFunc 覆盖 ekit 默认重试触发条件(幂等方法门 + 5xx +
+// network error),由用户传自定义 predicate(更严格:只对特定方法/状态码;
+// 更宽松:放开非幂等请求的重放)。
+// 不调 WithRetryIfFunc 时,WithRetryConfig 注入默认条件。
 //
 // **显式谓词永远赢，与 option 顺序无关**（#41）：即便本 option 写在
 // WithRetryConfig 之前也不会被默认谓词覆盖 ⇒ 不会再出现「以为收窄了重试、
@@ -311,8 +371,20 @@ func WithRetryIfFunc(fn func(req *protocol.Request, resp *protocol.Response, err
 }
 
 // WithEndpoints 设置静态 endpoint 列表。
+//
+// 与动态服务发现（WithNNS/WithServiceResolver）互斥（#89）：组合使用时
+// 静态端点会被动态刷新循环在下一个刷新周期覆盖（或静态端点被静默丢弃），
+// 行为随 option 顺序漂移且无告警——组合直接构造期报错（NewClient 返回
+// error）。一个 Client 只能有一种端点来源；需要静态兜底 + 动态发现的
+// 组合语义由 EndpointManager 的缓存降级提供（resolver 失败时保留快照）。
 func WithEndpoints(endpoints ...string) ClientOption {
 	return func(c *Client) {
+		if c.endpointManager != nil && c.endpointManager.resolver != nil {
+			c.setConstructErr(errors.New(
+				"httpx: WithEndpoints 与动态服务发现（WithNNS/WithServiceResolver）互斥：静态端点会被刷新循环覆盖，一个 Client 只能有一种端点来源"))
+			return
+		}
+		c.staticEndpoints = true
 		if c.endpointManager == nil {
 			c.endpointManager = c.newEndpointManager(nil, 0)
 		}
@@ -323,16 +395,34 @@ func WithEndpoints(endpoints ...string) ClientOption {
 // WithNNS 启用 NNS 服务发现。
 func WithNNS(serviceName string, nnsClient NNSClient) ClientOption {
 	return func(c *Client) {
-		resolver := NewNNSResolver(serviceName, nnsClient)
-		c.endpointManager = c.newEndpointManager(resolver, 30*time.Second)
+		c.setDynamicResolver(NewNNSResolver(serviceName, nnsClient))
 	}
 }
 
 // WithServiceResolver 设置自定义服务发现解析器。
 func WithServiceResolver(resolver ServiceResolver) ClientOption {
 	return func(c *Client) {
-		c.endpointManager = c.newEndpointManager(resolver, 30*time.Second)
+		c.setDynamicResolver(resolver)
 	}
+}
+
+// setDynamicResolver 安装动态 resolver 并创建带刷新循环的 EndpointManager
+// （#89）：
+//   - 替换已存在的 EndpointManager 前先 Stop 旧实例——旧 manager 若带刷新
+//     循环，其 refreshLoop goroutine/ticker 会一直跑到进程退出（组合 option
+//     反复替换时逐个泄漏）；
+//   - 与静态端点（WithEndpoints）互斥：动态发现会静默丢弃静态端点，
+//     构造期报错（NewClient 返回 error），行为不再随 option 顺序漂移。
+func (c *Client) setDynamicResolver(resolver ServiceResolver) {
+	if c.staticEndpoints {
+		c.setConstructErr(errors.New(
+			"httpx: WithNNS/WithServiceResolver 与静态端点（WithEndpoints）互斥：一个 Client 只能有一种端点来源"))
+		return
+	}
+	if c.endpointManager != nil {
+		c.endpointManager.Stop()
+	}
+	c.endpointManager = c.newEndpointManager(resolver, 30*time.Second)
 }
 
 // WithRefreshInterval 设置 endpoint 刷新间隔。
@@ -366,6 +456,9 @@ func WithSelector(sel loadbalance.Selector) ClientOption {
 }
 
 // WithPriorityQueue 启用请求优先级队列。
+// capacity 是每级准入容量，必须 >= 1——0/负数在构造期 panic 并指明原因
+// （0 会造成所有请求阻塞到 ctx 取消的死锁，见 NewPriorityQueue，#88）；
+// 配置值缺省时请显式传 1。
 func WithPriorityQueue(capacity int) ClientOption {
 	return func(c *Client) {
 		c.priorityQueue = NewPriorityQueue(capacity)

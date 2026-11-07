@@ -60,7 +60,7 @@ func TestClient_ResilienceMetrics(t *testing.T) {
 	defer srv.Close()
 
 	reg := prom.NewRegistry()
-	c := NewClient("test-svc",
+	c := MustNewClient("test-svc",
 		WithBaseURL(srv.URL),
 		// 故意把 WithCircuitBreaker 放在 WithMetrics 之前，验证顺序无关
 		WithCircuitBreaker("test-svc", gobreaker.Settings{
@@ -103,11 +103,11 @@ func TestClient_ResilienceMetrics(t *testing.T) {
 // （一个服务调多个上游的常态）。
 func TestClient_MetricsSharedAcrossClients(t *testing.T) {
 	reg := prom.NewRegistry()
-	c1 := NewClient("svc-x", WithMetrics(reg, ""), WithCircuitBreaker("svc-x", gobreaker.Settings{
+	c1 := MustNewClient("svc-x", WithMetrics(reg, ""), WithCircuitBreaker("svc-x", gobreaker.Settings{
 		ReadyToTrip: func(counts gobreaker.Counts) bool { return counts.ConsecutiveFailures >= 1 },
 	}))
 	defer c1.Close()
-	c2 := NewClient("svc-y", WithMetrics(reg, ""), WithCircuitBreaker("svc-y", gobreaker.Settings{
+	c2 := MustNewClient("svc-y", WithMetrics(reg, ""), WithCircuitBreaker("svc-y", gobreaker.Settings{
 		ReadyToTrip: func(counts gobreaker.Counts) bool { return counts.ConsecutiveFailures >= 1 },
 	}))
 	defer c2.Close()

@@ -24,7 +24,10 @@ go get github.com/oekit/httpx@v0.8.11
 - `WithMetrics`：Prometheus 弹性指标（熔断/重试计数）
 - `WithTracePropagation`：OTel 链路透传
 - `WithDialFunc` / `WithHertzOption`：拨号层/原生 Hertz 选项透传（出站 SSRF 防护）
+- `WithStream`：流式响应预设（关读超时、保留拨号超时，SSE/代理/WS 适用）
 - `DoDetail`：返回 status + 原始 body（2xx 也带 body，区别于 DoJSON）
+- `DoOnce`：client 可注入的低阶一次性请求原语（共享 `*http.Client` +
+  轻量骨架的收敛点，无重试/熔断——弹性语义单点在引擎层）
 - 实例权重贯通：注册中心的权重配置真实生效于负载均衡
 
 ## 快速使用
@@ -32,9 +35,12 @@ go get github.com/oekit/httpx@v0.8.11
 ```go
 import "github.com/oekit/httpx"
 
-c := httpx.NewClient("payment-svc", httpx.WithTimeout(5*time.Second))
+c, err := httpx.NewClient("payment-svc", httpx.WithTimeout(5*time.Second))
+if err != nil {
+    return err // 构造失败显式返回（静态合法配置可用 httpx.MustNewClient）
+}
 var out Result
-err := c.GetJSON(ctx, "/api/v1/pay", &out)
+err = c.GetJSON(ctx, "/api/v1/pay", &out)
 ```
 
 需要原始响应（状态码 + body）时用 `DoDetail`：
@@ -44,6 +50,28 @@ status, body, err := c.DoDetail(ctx, http.MethodPost, "/api/v1/pay", req)
 // 2xx: err == nil，body 为原始响应体
 // 非 2xx: status、body 仍有值，err 为 *ServiceError
 ```
+
+## 超时与流式响应
+
+默认注入 30s 拨号/读超时——**只适合短请求**。读超时对响应是「30s 内读完」
+的硬顶，SSE 转发、k8s proxy 长连接、WS 升级这类流式响应会被静默掐断
+（症状是连接被远端/代理切断，极难归因到客户端读超时）。流式场景必须
+显式关读超时：
+
+```go
+// WithStream：关读超时 + 保留拨号超时（流式的总时长预算由调用方经 ctx 控制）
+c, err := httpx.NewClient("k8s-proxy", httpx.WithStream())
+```
+
+超时语义族（#87/#90/#92）：
+
+| 意图 | 写法 |
+| --- | --- |
+| 拨号+读取各以 d 为上限（WithTimeout 语义） | `WithTimeout(d)` |
+| 只调读超时、保留 30s 拨号 | `WithHertzOption(client.WithClientReadTimeout(d))` |
+| 只调拨号超时 | `WithHertzOption(client.WithDialTimeout(d))` |
+| 写超时 | `WithHertzOption(client.WithWriteTimeout(d))` |
+| 流式（关读超时、保留拨号） | `WithStream()` |
 
 ## 出站 SSRF 防护
 
@@ -64,7 +92,7 @@ if err := pkgurlguard.IsBlockedURL(callbackURL); err != nil {
 
 // 拨号层（建连时）：解析 IP 预检 + 实际端点核对（闭合 DNS rebinding 的重解析窗口，
 // Happy-Eyeballs 胜出路径同样被核对）
-c := httpx.NewClient("user-callback", httpx.WithSafeDial())
+c, err := httpx.NewClient("user-callback", httpx.WithSafeDial())
 ```
 
 豁免走构造态 option（无进程级全局开关）：测试打本机 mock 用

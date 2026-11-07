@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -52,7 +55,7 @@ func jsonServer(t *testing.T, status int, body string) (url string, requests <-c
 
 func TestGetJSON_HappyPath(t *testing.T) {
 	srvURL, _ := jsonServer(t, http.StatusOK, `{"name":"alice","age":30}`)
-	c := NewClient("test", WithBaseURL(srvURL))
+	c := MustNewClient("test", WithBaseURL(srvURL))
 	defer c.Close()
 	var got map[string]any
 	if err := c.GetJSON(context.Background(), "/users/1", &got); err != nil {
@@ -65,7 +68,7 @@ func TestGetJSON_HappyPath(t *testing.T) {
 
 func TestGetJSON_4xxError(t *testing.T) {
 	srvURL, _ := jsonServer(t, http.StatusNotFound, `{"error":"not found"}`)
-	c := NewClient("test", WithBaseURL(srvURL))
+	c := MustNewClient("test", WithBaseURL(srvURL))
 	defer c.Close()
 	var got map[string]any
 	err := c.GetJSON(context.Background(), "/missing", &got)
@@ -83,7 +86,7 @@ func TestGetJSON_4xxError(t *testing.T) {
 
 func TestGetJSON_5xxError(t *testing.T) {
 	srvURL, _ := jsonServer(t, http.StatusInternalServerError, `{"error":"boom"}`)
-	c := NewClient("test", WithBaseURL(srvURL))
+	c := MustNewClient("test", WithBaseURL(srvURL))
 	defer c.Close()
 	var got map[string]any
 	err := c.GetJSON(context.Background(), "/explode", &got)
@@ -105,7 +108,7 @@ func TestGetJSON_TruncatesLargeErrorBody(t *testing.T) {
 		big[i] = 'x'
 	}
 	srvURL, _ := jsonServer(t, http.StatusBadRequest, string(big))
-	c := NewClient("test", WithBaseURL(srvURL))
+	c := MustNewClient("test", WithBaseURL(srvURL))
 	defer c.Close()
 	err := c.GetJSON(context.Background(), "/big", nil)
 	if err == nil {
@@ -118,7 +121,7 @@ func TestGetJSON_TruncatesLargeErrorBody(t *testing.T) {
 
 func TestPostJSON_HappyPath(t *testing.T) {
 	srvURL, requests := jsonServer(t, http.StatusOK, `{"id":42}`)
-	c := NewClient("test", WithBaseURL(srvURL))
+	c := MustNewClient("test", WithBaseURL(srvURL))
 	defer c.Close()
 	var got map[string]any
 	body := map[string]any{"name": "alice", "age": 30}
@@ -147,7 +150,7 @@ func TestPostJSON_HappyPath(t *testing.T) {
 
 func TestPostJSON_5xxError(t *testing.T) {
 	srvURL, _ := jsonServer(t, http.StatusServiceUnavailable, "down")
-	c := NewClient("test", WithBaseURL(srvURL))
+	c := MustNewClient("test", WithBaseURL(srvURL))
 	defer c.Close()
 	err := c.PostJSON(context.Background(), "/x", nil, nil)
 	if err == nil {
@@ -164,7 +167,7 @@ func TestPostJSON_5xxError(t *testing.T) {
 
 func TestDoJSON_PutMethod(t *testing.T) {
 	srvURL, requests := jsonServer(t, http.StatusOK, `{"updated":true}`)
-	c := NewClient("test", WithBaseURL(srvURL))
+	c := MustNewClient("test", WithBaseURL(srvURL))
 	defer c.Close()
 	var got map[string]any
 	body := map[string]any{"key": "value"}
@@ -186,7 +189,7 @@ func TestDoJSON_PutMethod(t *testing.T) {
 
 func TestDoJSON_NilBody(t *testing.T) {
 	srvURL, _ := jsonServer(t, http.StatusOK, `{}`)
-	c := NewClient("test", WithBaseURL(srvURL))
+	c := MustNewClient("test", WithBaseURL(srvURL))
 	defer c.Close()
 	var got map[string]any
 	if err := c.DoJSON(context.Background(), http.MethodGet, "/no-body", nil, &got); err != nil {
@@ -196,7 +199,7 @@ func TestDoJSON_NilBody(t *testing.T) {
 
 func TestDoRaw_ReturnsRawBytes(t *testing.T) {
 	srvURL, _ := jsonServer(t, http.StatusOK, `plain text body`)
-	c := NewClient("test", WithBaseURL(srvURL))
+	c := MustNewClient("test", WithBaseURL(srvURL))
 	defer c.Close()
 	got, err := c.DoRaw(context.Background(), http.MethodGet, "/raw", nil)
 	if err != nil {
@@ -209,7 +212,7 @@ func TestDoRaw_ReturnsRawBytes(t *testing.T) {
 
 func TestDoRaw_5xxError(t *testing.T) {
 	srvURL, _ := jsonServer(t, http.StatusInternalServerError, "fail")
-	c := NewClient("test", WithBaseURL(srvURL))
+	c := MustNewClient("test", WithBaseURL(srvURL))
 	defer c.Close()
 	_, err := c.DoRaw(context.Background(), http.MethodGet, "/x", nil)
 	if err == nil {
@@ -219,7 +222,7 @@ func TestDoRaw_5xxError(t *testing.T) {
 
 func TestBearerToken_PropagatesToRequest(t *testing.T) {
 	srvURL, requests := jsonServer(t, http.StatusOK, `{}`)
-	c := NewClient("test", WithBaseURL(srvURL), WithBearerToken("secret-token-123"))
+	c := MustNewClient("test", WithBaseURL(srvURL), WithBearerToken("secret-token-123"))
 	defer c.Close()
 	if err := c.GetJSON(context.Background(), "/auth", nil); err != nil {
 		t.Fatalf("GetJSON: %v", err)
@@ -236,7 +239,7 @@ func TestBearerToken_PropagatesToRequest(t *testing.T) {
 
 func TestBasicAuth_PropagatesToRequest(t *testing.T) {
 	srvURL, requests := jsonServer(t, http.StatusOK, `{}`)
-	c := NewClient("test", WithBaseURL(srvURL), WithBasicAuth("user", "pass"))
+	c := MustNewClient("test", WithBaseURL(srvURL), WithBasicAuth("user", "pass"))
 	defer c.Close()
 	if err := c.GetJSON(context.Background(), "/auth", nil); err != nil {
 		t.Fatalf("GetJSON: %v", err)
@@ -257,7 +260,7 @@ func TestBasicAuth_PropagatesToRequest(t *testing.T) {
 
 func TestTraceID_PropagatesToOutgoingRequest(t *testing.T) {
 	srvURL, requests := jsonServer(t, http.StatusOK, `{}`)
-	c := NewClient("test",
+	c := MustNewClient("test",
 		WithBaseURL(srvURL),
 		WithOnBeforeRequest(func(ctx context.Context, req *protocol.Request) error {
 			if tid := traceid.FromContext(ctx); tid != "" {
@@ -290,7 +293,7 @@ func TestRetry_OnServerError(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	// maxAttempts=3 (1 + 2 retries), 走 Hertz 官方 retry 引擎
-	c := NewClient("test", WithBaseURL(srv.URL), WithRetryConfig(3, 10*time.Millisecond, 100*time.Millisecond, 5*time.Millisecond))
+	c := MustNewClient("test", WithBaseURL(srv.URL), WithRetryConfig(3, 10*time.Millisecond, 100*time.Millisecond, 5*time.Millisecond))
 	defer c.Close()
 	err := c.GetJSON(context.Background(), "/retry", nil)
 	if err == nil {
@@ -313,7 +316,7 @@ func TestRetry_DelayPolicyActive(t *testing.T) {
 	t.Cleanup(srv.Close)
 	// 1 次重试,退避基数 80ms → BackOffDelayPolicy 至少 80ms
 	// (attempts 从 0 或 1 起,延迟 80ms 或 160ms;Random 抖动 [0,5ms))
-	c := NewClient("test", WithBaseURL(srv.URL), WithRetryConfig(2, 80*time.Millisecond, 500*time.Millisecond, 5*time.Millisecond))
+	c := MustNewClient("test", WithBaseURL(srv.URL), WithRetryConfig(2, 80*time.Millisecond, 500*time.Millisecond, 5*time.Millisecond))
 	defer c.Close()
 	start := time.Now()
 	_ = c.GetJSON(context.Background(), "/retry-delay", nil)
@@ -340,7 +343,7 @@ func TestRetry_StopsOnSuccess(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	// maxAttempts=4 (允许 3 次重试),2 次成功即可
-	c := NewClient("test", WithBaseURL(srv.URL), WithRetryConfig(4, 10*time.Millisecond, 100*time.Millisecond, 5*time.Millisecond))
+	c := MustNewClient("test", WithBaseURL(srv.URL), WithRetryConfig(4, 10*time.Millisecond, 100*time.Millisecond, 5*time.Millisecond))
 	defer c.Close()
 	var got map[string]any
 	if err := c.GetJSON(context.Background(), "/retry-then-ok", &got); err != nil {
@@ -362,7 +365,7 @@ func TestCircuitBreaker_OpensOnConsecutiveFailures(t *testing.T) {
 		_, _ = io.WriteString(w, "boom")
 	}))
 	t.Cleanup(srv.Close)
-	c := NewClient("test", WithBaseURL(srv.URL), WithCircuitBreaker("test-cb", gobreaker.Settings{
+	c := MustNewClient("test", WithBaseURL(srv.URL), WithCircuitBreaker("test-cb", gobreaker.Settings{
 		Interval: 10 * time.Second,
 		Timeout:  10 * time.Second,
 		ReadyToTrip: func(counts gobreaker.Counts) bool {
@@ -389,7 +392,7 @@ func TestCircuitBreaker_OpensOnConsecutiveFailures(t *testing.T) {
 func TestMetrics_TargetLabel_AppearsInRegistry(t *testing.T) {
 	srvURL, _ := jsonServer(t, http.StatusOK, `{}`)
 	reg := prometheus.NewRegistry()
-	c := NewClient("test", WithBaseURL(srvURL), WithMetrics(reg, "ekit_test"), WithTarget("user-svc"))
+	c := MustNewClient("test", WithBaseURL(srvURL), WithMetrics(reg, "ekit_test"), WithTarget("user-svc"))
 	defer c.Close()
 	if err := c.GetJSON(context.Background(), "/m", nil); err != nil {
 		t.Fatalf("GetJSON: %v", err)
@@ -423,7 +426,7 @@ func TestMetrics_TargetLabel_AppearsInRegistry(t *testing.T) {
 func TestMetrics_TargetLabel_DefaultsToDefault(t *testing.T) {
 	srvURL, _ := jsonServer(t, http.StatusOK, `{}`)
 	reg := prometheus.NewRegistry()
-	c := NewClient("test", WithBaseURL(srvURL), WithMetrics(reg, "ekit_test"))
+	c := MustNewClient("test", WithBaseURL(srvURL), WithMetrics(reg, "ekit_test"))
 	defer c.Close()
 	if err := c.GetJSON(context.Background(), "/m", nil); err != nil {
 		t.Fatalf("GetJSON: %v", err)
@@ -457,7 +460,7 @@ func TestResolveEndpoint_PicksAndConcatenates(t *testing.T) {
 	t.Cleanup(srv.Close)
 	host, port := parseHostPort(srv.URL)
 	endpoint := "http://" + host + ":" + intToStr(port)
-	c := NewClient("test", WithEndpoints(endpoint))
+	c := MustNewClient("test", WithEndpoints(endpoint))
 	defer c.Close()
 	if err := c.GetJSON(context.Background(), "/api/v1/items", nil); err != nil {
 		t.Fatalf("GetJSON: %v", err)
@@ -471,7 +474,7 @@ func TestResolveEndpoint_PicksAndConcatenates(t *testing.T) {
 
 func TestResolveEndpoint_NoManager(t *testing.T) {
 	srvURL, _ := jsonServer(t, http.StatusOK, `{}`)
-	c := NewClient("test", WithBaseURL(srvURL))
+	c := MustNewClient("test", WithBaseURL(srvURL))
 	defer c.Close()
 	if err := c.GetJSON(context.Background(), "/direct", nil); err != nil {
 		t.Fatalf("GetJSON: %v", err)
@@ -491,6 +494,51 @@ func TestNNSResolver_Resolve(t *testing.T) {
 	want0 := "http://10.0.0.1:8080"
 	if got[0] != want0 {
 		t.Errorf("expected %q, got %q", want0, got[0])
+	}
+}
+
+// TestNNSResolver_Resolve_SchemeFromMetadata 回归（#90）：实例地址 scheme
+// 从 Metadata 取（键 MetadataKeyScheme）——修复前硬编码 "http://"，注册
+// 中心实例无论元数据如何都被以明文 http 拨号，https 服务无法经 WithNNS
+// 接入。缺省与不认识的取值回落 http。
+func TestNNSResolver_Resolve_SchemeFromMetadata(t *testing.T) {
+	stub := &stubNNSClient{instances: []registry.Instance{
+		{IP: "10.0.0.1", Port: 8443, Metadata: map[string]string{"scheme": "https"}},
+		{IP: "10.0.0.2", Port: 8080}, // 无元数据：回落 http
+		{IP: "10.0.0.3", Port: 8080, Metadata: map[string]string{"scheme": "grpc"}},  // 非 HTTP 协议：回落 http（显式连接错误，不静默改写）
+		{IP: "10.0.0.4", Port: 8443, Metadata: map[string]string{"scheme": "HTTPS"}}, // 大小写不敏感
+	}}
+	r := NewNNSResolver("svc-a", stub)
+	got, err := r.Resolve(context.Background())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	want := []string{
+		"https://10.0.0.1:8443",
+		"http://10.0.0.2:8080",
+		"http://10.0.0.3:8080",
+		"https://10.0.0.4:8443",
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("endpoint[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestSelectorNodes_SchemeFromMetadata 回归（#90）：SelectorNodes 的节点
+// 地址同样从实例 Metadata 取 scheme（与 NNSResolver.Resolve 同源），
+// https 实例不再被硬编码明文 http。
+func TestSelectorNodes_SchemeFromMetadata(t *testing.T) {
+	nodes := SelectorNodes([]registry.Instance{
+		{Service: "svc", IP: "10.0.0.1", Port: 8443, Weight: 2, Metadata: map[string]string{"scheme": "https"}},
+		{Service: "svc", IP: "10.0.0.2", Port: 8080, Weight: 1},
+	})
+	if got := nodes[0].Address(); got != "https://10.0.0.1:8443" {
+		t.Errorf("node[0].Address() = %q, want https://10.0.0.1:8443", got)
+	}
+	if got := nodes[1].Address(); got != "http://10.0.0.2:8080" {
+		t.Errorf("node[1].Address() = %q, want http://10.0.0.2:8080", got)
 	}
 }
 
@@ -625,7 +673,7 @@ func TestRawDo_BaseURLAuthAndCookieJar(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	c := NewClient("test",
+	c := MustNewClient("test",
 		WithBaseURL(srv.URL),
 		WithBasicAuth("u1", "p1"),
 		WithCookieJar(jar),
@@ -678,5 +726,202 @@ func TestRawDo_BaseURLAuthAndCookieJar(t *testing.T) {
 	mu.Unlock()
 	if !strings.Contains(finalCookie, "sid=abc123") {
 		t.Errorf("cookie jar not injected, cookie=%q", finalCookie)
+	}
+}
+
+// TestClient_Close_ReleasesIdleConnections 回归（#84）：Close 除停止
+// EndpointManager 刷新循环外，还必须释放底层 Hertz client 的空闲连接池——
+// 修复前底层 client 从不关闭，短生命周期场景（测试反复建 Client、临时任务
+// 客户端）每次泄漏一套连接池，长跑进程累积。
+func TestClient_Close_ReleasesIdleConnections(t *testing.T) {
+	var mu sync.Mutex
+	openConns := make(map[net.Conn]struct{})
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "ok")
+	}))
+	// ConnState 必须在 Start 前挂上（Server 字段运行期不可变，避免与
+	// accept 循环的读写竞争）
+	srv.Config.ConnState = func(c net.Conn, s http.ConnState) {
+		mu.Lock()
+		if s == http.StateClosed {
+			delete(openConns, c)
+		} else {
+			openConns[c] = struct{}{}
+		}
+		mu.Unlock()
+	}
+	srv.Start()
+	t.Cleanup(srv.Close)
+	countOpen := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(openConns)
+	}
+
+	c := MustNewClient("test", WithBaseURL(srv.URL))
+	if err := c.GetJSON(context.Background(), "/keepalive", nil); err != nil {
+		t.Fatalf("GetJSON: %v", err)
+	}
+
+	// keep-alive：请求完成后连接留在客户端池中（服务端视角已 idle 但仍打开）
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && countOpen() == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := countOpen(); got == 0 {
+		t.Fatal("expected a pooled keep-alive connection before Close")
+	}
+
+	c.Close()
+	// 底层 Hertz client 的空闲连接被主动关闭：服务端观察到 StateClosed
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && countOpen() != 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := countOpen(); got != 0 {
+		t.Fatalf("Close 后仍有 %d 条连接未释放（底层 Hertz client 未关闭）", got)
+	}
+
+	c.Close() // 幂等：重复 Close 不 panic
+}
+
+// TestUploadFile_UploadsFileContent 回归（#86）：UploadFile 必须读取本地文件
+// 内容作为文件 part——修复前 data 恒传 nil，上传请求成功发出但文件 part
+// 内容恒为空（空文件），且 part filename 是完整本地路径（泄漏服务器目录
+// 结构）。本测试断言服务端实际收到的文件名（base 名）与内容。
+func TestUploadFile_UploadsFileContent(t *testing.T) {
+	content := []byte("PDF-BYTES\x00\x01\x02report-payload") // 带二进制，防路径串误当内容
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "nested", "report.pdf") // 带子目录：filename 必须只是 base 名
+	if err := os.MkdirAll(filepath.Dir(filePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filePath, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	var gotContent []byte
+	var gotFilename, gotScene string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		f, fh, err := r.FormFile("upload")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		defer f.Close()
+		b, err := io.ReadAll(f)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		gotContent = b
+		gotFilename = fh.Filename
+		gotScene = r.FormValue("scene")
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	c := MustNewClient("test", WithBaseURL(srv.URL))
+	defer c.Close()
+
+	var out map[string]any
+	if err := c.UploadFile(context.Background(), "/upload", filePath, "upload",
+		map[string]string{"scene": "daily"}, &out); err != nil {
+		t.Fatalf("UploadFile: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if string(gotContent) != string(content) {
+		t.Errorf("服务端收到的文件内容 = %q, want %q（文件未被读取，上传了空文件）", gotContent, content)
+	}
+	if gotFilename != "report.pdf" {
+		t.Errorf("服务端收到的 filename = %q, want %q（filename 应取 base 名，不泄漏本地路径）", gotFilename, "report.pdf")
+	}
+	if gotScene != "daily" {
+		t.Errorf("extra field scene = %q, want %q", gotScene, "daily")
+	}
+}
+
+// TestUploadFile_MissingFileError 回归（#86）：文件读取失败显式报错
+// （修复前不读文件，错误无从暴露）。
+func TestUploadFile_MissingFileError(t *testing.T) {
+	c := MustNewClient("test", WithBaseURL("http://127.0.0.1:1"))
+	defer c.Close()
+	err := c.UploadFile(context.Background(), "/upload",
+		filepath.Join(t.TempDir(), "no-such-file.bin"), "upload", nil, nil)
+	if err == nil {
+		t.Fatal("expected error for missing file, got nil")
+	}
+	if !strings.Contains(err.Error(), "read upload file") {
+		t.Errorf("error should mention read upload file, got %q", err.Error())
+	}
+}
+
+// TestWithStream_DisablesReadTimeout 回归（#87）：默认读超时会把任何长流
+// 掐死（症状是连接被远端/代理静默切断）；WithStream 预设关闭读超时后，
+// 总时长超过 WithTimeout 预算的慢响应也能读完。
+func TestWithStream_DisablesReadTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = io.WriteString(w, "chunk1;")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		time.Sleep(700 * time.Millisecond) // 总时长 >> 300ms 预算
+		_, _ = io.WriteString(w, "chunk2")
+	}))
+	t.Cleanup(srv.Close)
+
+	// 对照组：仅 WithTimeout(300ms)——慢响应被读超时掐断
+	strict := MustNewClient("test", WithBaseURL(srv.URL), WithTimeout(300*time.Millisecond))
+	defer strict.Close()
+	start := time.Now()
+	if _, err := strict.DoRaw(context.Background(), http.MethodGet, "/stream", nil); err == nil {
+		t.Fatal("expected read timeout for slow response without WithStream, got nil")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("对照组应快速失败（300ms 级），实际 %v", elapsed)
+	}
+
+	// 实验组：WithStream 关读超时（保留拨号预算）——同一慢响应可读完
+	streaming := MustNewClient("test",
+		WithBaseURL(srv.URL),
+		WithTimeout(300*time.Millisecond), // 拨号预算保留
+		WithStream(),                      // 读超时关闭（后置覆盖）
+	)
+	defer streaming.Close()
+	got, err := streaming.DoRaw(context.Background(), http.MethodGet, "/stream", nil)
+	if err != nil {
+		t.Fatalf("WithStream 后慢响应仍被掐断: %v", err)
+	}
+	if string(got) != "chunk1;chunk2" {
+		t.Errorf("body = %q, want %q", got, "chunk1;chunk2")
+	}
+}
+
+// TestWithStream_LeavesDialTimeoutIntact WithStream 只关读超时，拨号超时
+// 保留（建连仍受预算约束——选项装配面的确定性断言）。
+func TestWithStream_LeavesDialTimeoutIntact(t *testing.T) {
+	c := MustNewClient("test",
+		WithTimeout(2*time.Second),
+		WithStream(),
+	)
+	defer c.Close()
+	opts := c.Hertz().GetOptions()
+	if got := opts.DialTimeout; got != 2*time.Second {
+		t.Errorf("DialTimeout = %v, want 2s（WithStream 不应动拨号超时）", got)
+	}
+	if got := opts.ReadTimeout; got != 0 {
+		t.Errorf("ReadTimeout = %v, want 0（WithStream 应关读超时）", got)
 	}
 }

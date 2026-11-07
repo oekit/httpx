@@ -2,6 +2,7 @@ package httpx
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -58,7 +59,7 @@ func TestRetryIfFunc_ExplicitWinsRegardlessOfOptionOrder(t *testing.T) {
 			t.Cleanup(srv.Close)
 
 			opts := append([]ClientOption{WithEndpoints(srv.URL)}, tc.opts...)
-			cli := NewClient("svc", opts...)
+			cli := MustNewClient("svc", opts...)
 
 			_, _, err := cli.DoDetail(context.Background(), http.MethodPost, "/x", nil)
 			if err == nil {
@@ -71,10 +72,14 @@ func TestRetryIfFunc_ExplicitWinsRegardlessOfOptionOrder(t *testing.T) {
 	}
 }
 
-// TestRetryIfFunc_DefaultStillRetriesNonIdempotent 回归护栏：没有设置显式
-// 谓词时，默认谓词（5xx + network error，**不看方法**）的行为不变——
-// 这是 WithRetryConfig 的既有口径，不能被本次修复悄悄改掉。
-func TestRetryIfFunc_DefaultStillRetriesNonIdempotent(t *testing.T) {
+// TestRetryIfFunc_DefaultDoesNotRetryNonIdempotent 回归（#85）：没有设置
+// 显式谓词时，默认谓词带**幂等方法门**——POST 等非幂等请求遇 5xx 不再被
+// 自动重放（旧默认不看方法，网关超时但后端已写入时会重复下单/重复创建）。
+//
+// 旧护栏 TestRetryIfFunc_DefaultStillRetriesNonIdempotent 钉住的是
+// 「POST 也重试」的旧口径，#85 论证「保持兼容 ≠ 安全默认」后语义翻转，
+// 由本测试钉住新口径；需要旧语义经 WithRetryIfFunc 显式声明。
+func TestRetryIfFunc_DefaultDoesNotRetryNonIdempotent(t *testing.T) {
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits.Add(1)
@@ -82,14 +87,86 @@ func TestRetryIfFunc_DefaultStillRetriesNonIdempotent(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	cli := NewClient("svc",
+	cli := MustNewClient("svc",
 		WithEndpoints(srv.URL),
 		WithRetryConfig(3, 10*time.Millisecond, 20*time.Millisecond, 0),
 	)
 
-	_, _, _ = cli.DoDetail(context.Background(), http.MethodPost, "/x", nil)
+	body := map[string]string{"order": "dup-risk"}
+	_, _, _ = cli.DoDetail(context.Background(), http.MethodPost, "/x", body)
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("默认谓词不应重试带 body 的 POST（重复下单风险），实际请求 %d 次", got)
+	}
+}
+
+// TestRetryIfFunc_DefaultStillRetriesIdempotent 回归（#85）：幂等方法（GET）
+// 的 5xx 重试保留——方法门收紧的是非幂等重放，不是重试本身。
+func TestRetryIfFunc_DefaultStillRetriesIdempotent(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+
+	cli := MustNewClient("svc",
+		WithEndpoints(srv.URL),
+		WithRetryConfig(3, 10*time.Millisecond, 20*time.Millisecond, 0),
+	)
+
+	_, _, _ = cli.DoDetail(context.Background(), http.MethodGet, "/x", nil)
 	if got := hits.Load(); got < 2 {
-		t.Fatalf("默认谓词应重试 POST（既有口径），实际请求 %d 次", got)
+		t.Fatalf("默认谓词应重试幂等 GET 的 5xx，实际请求 %d 次", got)
+	}
+}
+
+// TestRetryIfFunc_IdempotentGateUnit 单元钉住幂等门判定：幂等方法与
+// 无 body 请求可重试，带 body 的非幂等请求不可。
+func TestRetryIfFunc_IdempotentGateUnit(t *testing.T) {
+	newReq := func(method string, body []byte) *protocol.Request {
+		req := &protocol.Request{}
+		req.SetMethod(method)
+		req.SetRequestURI("http://127.0.0.1/x")
+		if body != nil {
+			req.SetBody(body)
+		}
+		return req
+	}
+
+	for _, tc := range []struct {
+		method string
+		body   []byte
+		want   bool
+	}{
+		{http.MethodGet, nil, true},
+		{http.MethodHead, nil, true},
+		{http.MethodOptions, nil, true},
+		{http.MethodPut, []byte(`{"a":1}`), true},
+		{http.MethodDelete, nil, true},
+		{http.MethodTrace, nil, true},
+		{http.MethodPost, nil, true},                // 无 body 的 POST 重放无副作用面
+		{http.MethodPost, []byte(`{"a":1}`), false}, // 带 body 的 POST：重复下单风险
+		{http.MethodPatch, []byte(`{"a":1}`), false},
+	} {
+		if got := idempotentForRetry(newReq(tc.method, tc.body)); got != tc.want {
+			t.Errorf("idempotentForRetry(%s, body=%v) = %v, want %v", tc.method, tc.body != nil, got, tc.want)
+		}
+	}
+
+	// 默认谓词整体：幂等 5xx 重试、非幂等带 body 5xx 不重试、错误按方法门
+	srvErr := &protocol.Response{}
+	srvErr.SetStatusCode(500)
+	if !defaultRetryIf(newReq(http.MethodGet, nil), srvErr, nil) {
+		t.Error("defaultRetryIf: GET 5xx 应重试")
+	}
+	if defaultRetryIf(newReq(http.MethodPost, []byte(`{}`)), srvErr, nil) {
+		t.Error("defaultRetryIf: 带 body 的 POST 5xx 不应重试")
+	}
+	if defaultRetryIf(newReq(http.MethodPost, []byte(`{}`)), nil, errors.New("net")) {
+		t.Error("defaultRetryIf: 带 body 的 POST 网络错误不应重试（后端可能已写入）")
+	}
+	if !defaultRetryIf(newReq(http.MethodGet, nil), nil, errors.New("net")) {
+		t.Error("defaultRetryIf: GET 网络错误应重试")
 	}
 }
 
@@ -103,7 +180,7 @@ func TestRetryIfFunc_ExplicitPredicateIsUsed(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	cli := NewClient("svc",
+	cli := MustNewClient("svc",
 		WithEndpoints(srv.URL),
 		WithRetryIfFunc(func(_ *protocol.Request, _ *protocol.Response, _ error) bool { return true }),
 		WithRetryConfig(3, 10*time.Millisecond, 20*time.Millisecond, 0),

@@ -32,8 +32,8 @@ import (
 //     桥接面向低 QPS 控制面调用，不适合大文件流式场景；
 //   - 非 2xx 不是错误（标准库语义）：调用方自行判定 StatusCode；熔断拒绝返回
 //     裸 ErrCircuitOpen（errors.Is 判定）；
-//   - 重试缺省关闭，WithRetryConfig 显式开启（防 OAuth POST 等非幂等请求被
-//     自动重放）；开启后对幂等语义的自评仍是调用方责任（WithRetryIfFunc 可收紧）；
+//   - 重试缺省关闭，WithRetryConfig 显式开启；开启后的默认条件带幂等方法门
+//     （非幂等请求不自动重放，#85），放开经 WithRetryIfFunc 显式声明；
 //   - hop-by-hop 头（Connection/Keep-Alive/TE/Trailers/Transfer-Encoding/Upgrade/
 //     Proxy-*）与 Host/Content-Length 不透传（由目标端点与 body 长度决定），
 //     其余请求头全量透传；响应头全量回填。
@@ -43,12 +43,28 @@ type roundTripper struct {
 
 // NewRoundTripper 把 httpx Client 装进标准 http.RoundTripper（#8）。
 // service 与 opts 语义同 NewClient。
+//
+// 构造失败（含静态端点与动态 resolver 互斥等构造期冲突）直接 panic——
+// 桥接层为「一行 Transport 接入」保留无错误签名，panic 发生在初始化期、
+// 携带完整原因，不是请求路径上的运行期 panic。配置来自外部输入、需要
+// 显式判错的调用方用 [NewRoundTripperE]。
 func NewRoundTripper(service string, opts ...ClientOption) http.RoundTripper {
-	return &roundTripper{c: NewClient(service, opts...)}
+	return &roundTripper{c: MustNewClient(service, opts...)}
+}
+
+// NewRoundTripperE 是 [NewRoundTripper] 的显式错误版本（#83）：构造失败
+// 返回 error 而非 panic。语义同 NewRoundTripper。
+func NewRoundTripperE(service string, opts ...ClientOption) (http.RoundTripper, error) {
+	c, err := NewClient(service, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return &roundTripper{c: c}, nil
 }
 
 // StdClient 返回装好 Transport 的标准 http.Client（Timeout 留零——
 // 超时边界由 httpx 层管理：缺省 dial/read 30s，可经 WithTimeout/WithHertzOption 调整）。
+// 构造失败语义同 [NewRoundTripper]（panic）；需显式判错用 [NewRoundTripperE]。
 func StdClient(service string, opts ...ClientOption) *http.Client {
 	return &http.Client{Transport: NewRoundTripper(service, opts...)}
 }

@@ -2,6 +2,7 @@ package httpx
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 
 	"sync/atomic"
@@ -37,17 +38,48 @@ type Client struct {
 	mw                     []client.Middleware
 	lastMW                 []client.Middleware // 走 Hertz client.UseAsLast 注入(trace propagation 等)
 	retryIf                func(req *protocol.Request, resp *protocol.Response, err error) bool
-	retryIfExplicit        bool // 用户是否显式设置过重试谓词（WithRetryIfFunc）
-	hasBreaker             bool
+	retryIfExplicit        bool  // 用户是否显式设置过重试谓词（WithRetryIfFunc）
+	hasBreaker             bool  // WithCircuitBreaker 是否装配（熔断 gauge 初始化用）
+	staticEndpoints        bool  // WithEndpoints 是否装配过（与动态 resolver 互斥判定，#89）
+	constructErr           error // 构造期配置冲突（首个生效），NewClient 汇总返回（#83）
 }
 
 // NewClient 创建 HTTP 客户端实例，应用指定的配置选项。
-func NewClient(service string, opts ...ClientOption) *Client {
+//
+// 构造失败显式返回 error（#83）：与家族同级构造器契约一致（gormx.Open、
+// core/config.LoadFile 均为 error 显式返回），出站 HTTP 客户端用在
+// webhook/工具调用等场景，构造失败不应升级为进程死亡。失败来源：
+//   - WithHertzOption 逃生舱透传的非法 Hertz client 配置项；
+//   - 构造期配置冲突（如 WithEndpoints 与 WithNNS/WithServiceResolver 互斥，#89）。
+//
+// BREAKING（0.x minor 改签名，先例 gormx v0.9.0 参数序 breaking）：签名从
+// `NewClient(...) *Client` 改为 `NewClient(...) (*Client, error)`。旧代码
+//
+//	c := httpx.NewClient("svc", ...)
+//
+// 迁移为
+//
+//	c, err := httpx.NewClient("svc", ...)
+//	if err != nil {
+//	    return err
+//	}
+//
+// 确认构造参数静态合法、不愿逐处判错的调用方用 [MustNewClient]。
+func NewClient(service string, opts ...ClientOption) (*Client, error) {
 	c := &Client{
 		service: service,
 	}
 	for _, opt := range opts {
 		opt(c)
+	}
+
+	// 构造期冲突（首个生效）：显式返回错误。冲突发生前 option 可能已创建
+	// 带刷新循环的 EndpointManager，先停掉再报错，不在错误路径泄漏 goroutine。
+	if c.constructErr != nil {
+		if c.endpointManager != nil {
+			c.endpointManager.Stop()
+		}
+		return nil, c.constructErr
 	}
 
 	hzOpts := append([]config.ClientOption{
@@ -64,7 +96,7 @@ func NewClient(service string, opts ...ClientOption) *Client {
 
 	hc, err := client.NewClient(hzOpts...)
 	if err != nil {
-		panic("httpx: client.NewClient with defaults failed: " + err.Error())
+		return nil, fmt.Errorf("httpx: client.NewClient with defaults failed: %w", err)
 	}
 	c.client = hc
 
@@ -107,13 +139,41 @@ func NewClient(service string, opts ...ClientOption) *Client {
 			c.client.Use(mw)
 		}
 	}
+	return c, nil
+}
+
+// MustNewClient 是 [NewClient] 的 panic 版本：构造失败直接 panic（携带
+// NewClient 返回的完整错误信息）。仅用于构造参数静态合法的场景（硬编码
+// 配置、初始化期组装）；配置来自外部输入时一律用 NewClient 显式判错。
+func MustNewClient(service string, opts ...ClientOption) *Client {
+	c, err := NewClient(service, opts...)
+	if err != nil {
+		panic(err)
+	}
 	return c
 }
 
-// Close 关闭客户端，释放资源。
+// setConstructErr 记录构造期配置冲突（首个错误生效，#83）：ClientOption
+// 无法返回错误，冲突先落在 Client 上，NewClient 汇总显式返回。
+func (c *Client) setConstructErr(err error) {
+	if c.constructErr == nil {
+		c.constructErr = err
+	}
+}
+
+// Close 关闭客户端，释放资源：停止 EndpointManager 刷新循环，并关闭底层
+// Hertz client 的空闲连接池（hostClient 连接与清理协程随之收敛，#84）。
+//
+// 说明：钉住的 hertz v0.10.6 *client.Client 没有 Close() error，可用的
+// 释放口是 CloseIdleConnections()——关闭全部 hostClient 的空闲连接后，
+// hertz 的连接清理协程按 ShouldRemove 逐个回收 hostClient 并退出。
+// Close 幂等，可安全重复调用。
 func (c *Client) Close() {
 	if c.endpointManager != nil {
 		c.endpointManager.Stop()
+	}
+	if c.client != nil {
+		c.client.CloseIdleConnections()
 	}
 }
 

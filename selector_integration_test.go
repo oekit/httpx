@@ -42,7 +42,7 @@ func TestClientSelectorRoundRobin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := NewClient("rr-svc", WithNNS("rr-svc", stub), WithSelector(sel))
+	c := MustNewClient("rr-svc", WithNNS("rr-svc", stub), WithSelector(sel))
 	defer c.Close()
 
 	// 首刷是异步的：显式同步刷新一次，消除竞态
@@ -102,7 +102,7 @@ func TestDoCodecRoundTrip(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient("codec-svc", WithBaseURL(srv.URL))
+	c := MustNewClient("codec-svc", WithBaseURL(srv.URL))
 	defer c.Close()
 
 	var out map[string]int
@@ -131,7 +131,7 @@ func TestSelectorFallbackToBaseURL(t *testing.T) {
 	// 空 NNS 实例列表 → refreshNodes 保留空快照 → Pick 回退 baseURL
 	stub := &stubNNSClient{instances: []registry.Instance{}} // GetInstances 返回空但不报错
 	sel, _ := loadbalance.NewSelector("roundrobin")
-	c := NewClient("fb-svc", WithBaseURL(srv.URL), WithNNS("fb-svc", stub), WithSelector(sel))
+	c := MustNewClient("fb-svc", WithBaseURL(srv.URL), WithNNS("fb-svc", stub), WithSelector(sel))
 	defer c.Close()
 
 	status, _, err := c.DoDetail(context.Background(), http.MethodGet, "/", nil)
