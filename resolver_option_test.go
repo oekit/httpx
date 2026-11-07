@@ -215,3 +215,57 @@ func TestNewClient_ConflictErrorStopsManager(t *testing.T) {
 		t.Fatalf("构造错误路径泄漏刷新循环：resolver 调用 %d → %d（200ms 观察窗口）", base, got)
 	}
 }
+
+// TestNewPriorityQueue_InvalidCapacityPanics 回归（#88）：capacity 非法
+// （0 = 无缓冲 channel，首个请求即死锁到 ctx 取消；负数 = make 直接 panic）
+// 必须在构造期 panic 并指明原因，而不是运行期全量超时。
+func TestNewPriorityQueue_InvalidCapacityPanics(t *testing.T) {
+	for _, capacity := range []int{0, -1, -100} {
+		func(cap int) {
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Errorf("NewPriorityQueue(%d): 期望 panic, got none", cap)
+					return
+				}
+				msg, ok := r.(string)
+				if !ok {
+					t.Errorf("NewPriorityQueue(%d): panic 值应为 string, got %T", cap, r)
+					return
+				}
+				if !strings.Contains(msg, "capacity must be >= 1") {
+					t.Errorf("NewPriorityQueue(%d): panic 信息应指明原因, got %q", cap, msg)
+				}
+			}()
+			_ = NewPriorityQueue(cap)
+		}(capacity)
+	}
+}
+
+// TestWithPriorityQueue_InvalidCapacityPanics 经 option 路径同样构造期暴露
+// （配置缺省值传 0 的场景）。
+func TestWithPriorityQueue_InvalidCapacityPanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Error("WithPriorityQueue(0): 期望 panic, got none")
+		}
+	}()
+	_ = MustNewClient("svc", WithPriorityQueue(0))
+}
+
+// TestNewPriorityQueue_MinCapacityWorks 边界：capacity=1 可用（修复目标，
+// 非法值钳到「显式传 1」的合法形态，而非静默放行 0）。
+func TestNewPriorityQueue_MinCapacityWorks(t *testing.T) {
+	q := NewPriorityQueue(1)
+	ctx := context.Background()
+	if !q.Acquire(ctx, PriorityNormal) {
+		t.Fatal("Acquire(capacity=1) = false, want true")
+	}
+	if q.Len() != 1 {
+		t.Fatalf("Len() = %d, want 1", q.Len())
+	}
+	q.Release(PriorityNormal)
+	if q.Len() != 0 {
+		t.Errorf("Len() after Release = %d, want 0", q.Len())
+	}
+}

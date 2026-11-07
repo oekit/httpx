@@ -433,6 +433,9 @@ func WithSelector(sel loadbalance.Selector) ClientOption {
 }
 
 // WithPriorityQueue 启用请求优先级队列。
+// capacity 是每级准入容量，必须 >= 1——0/负数在构造期 panic 并指明原因
+// （0 会造成所有请求阻塞到 ctx 取消的死锁，见 NewPriorityQueue，#88）；
+// 配置值缺省时请显式传 1。
 func WithPriorityQueue(capacity int) ClientOption {
 	return func(c *Client) {
 		c.priorityQueue = NewPriorityQueue(capacity)

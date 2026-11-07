@@ -321,7 +321,18 @@ type PriorityQueue struct {
 }
 
 // NewPriorityQueue 创建优先级队列。
+//
+// capacity 是每级（high/normal/low）的准入容量，必须 >= 1（#88）：
+//   - capacity == 0（配置值缺省的典型形态）会得到无缓冲 channel——
+//     Acquire 的发送必须等 Release 接收，首个请求即死锁，所有请求卡在
+//     Acquire 直到 ctx 超时/取消，症状是客户端全量超时，极难定位；
+//   - capacity < 0 直接 panic（make 的运行期 panic，无原因说明）。
+//
+// 非法值在构造期 panic 并指明原因，不等到运行期静默阻塞。
 func NewPriorityQueue(capacity int) *PriorityQueue {
+	if capacity < 1 {
+		panic(fmt.Sprintf("httpx: NewPriorityQueue capacity must be >= 1, got %d（WithPriorityQueue 配置缺省/为零时请显式传 1）", capacity))
+	}
 	return &PriorityQueue{
 		high:   make(chan struct{}, capacity),
 		normal: make(chan struct{}, capacity),
