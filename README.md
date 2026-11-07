@@ -32,9 +32,12 @@ go get github.com/oekit/httpx@v0.8.11
 ```go
 import "github.com/oekit/httpx"
 
-c := httpx.NewClient("payment-svc", httpx.WithTimeout(5*time.Second))
+c, err := httpx.NewClient("payment-svc", httpx.WithTimeout(5*time.Second))
+if err != nil {
+    return err // 构造失败显式返回（静态合法配置可用 httpx.MustNewClient）
+}
 var out Result
-err := c.GetJSON(ctx, "/api/v1/pay", &out)
+err = c.GetJSON(ctx, "/api/v1/pay", &out)
 ```
 
 需要原始响应（状态码 + body）时用 `DoDetail`：
@@ -64,7 +67,7 @@ if err := pkgurlguard.IsBlockedURL(callbackURL); err != nil {
 
 // 拨号层（建连时）：解析 IP 预检 + 实际端点核对（闭合 DNS rebinding 的重解析窗口，
 // Happy-Eyeballs 胜出路径同样被核对）
-c := httpx.NewClient("user-callback", httpx.WithSafeDial())
+c, err := httpx.NewClient("user-callback", httpx.WithSafeDial())
 ```
 
 豁免走构造态 option（无进程级全局开关）：测试打本机 mock 用

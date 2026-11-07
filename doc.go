@@ -17,18 +17,24 @@
 //
 // # 快速接入
 //
-// 创建客户端：
+// 创建客户端（构造失败显式返回 error，与 gormx.Open 等家族构造器一致，
+// #83）：
 //
-//	client := ehttp.NewClient("user-service",
+//	client, err := ehttp.NewClient("user-service",
 //	    ehttp.WithBaseURL("http://user-service:8080"),
 //	    ehttp.WithTimeout(5*time.Second),
 //	    ehttp.WithTracePropagation(),
 //	)
+//	if err != nil {
+//	    return err
+//	}
+//
+// 构造参数静态合法时可用 MustNewClient 一行接入。
 //
 // GET 请求：
 //
 //	var users []User
-//	err := client.GetJSON(ctx, "/api/users", &users)
+//	err = client.GetJSON(ctx, "/api/users", &users)
 //
 // POST 请求：
 //
@@ -50,7 +56,7 @@
 //
 // 使用 WithMetrics 启用 Prometheus 指标：
 //
-//	client := ehttp.NewClient("user-service",
+//	client, err := ehttp.NewClient("user-service",
 //	    ehttp.WithMetrics(metrics.Registry, "myservice"),
 //	)
 //

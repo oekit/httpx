@@ -255,7 +255,7 @@ func WithCircuitBreaker(name string, settings gobreaker.Settings) ClientOption {
 //
 // 用法:
 //
-//	cli := httpx.NewClient("my-svc",
+//	cli, err := httpx.NewClient("my-svc",
 //	    httpx.WithRetryConfig(3, 100*time.Millisecond, 1*time.Second, 50*time.Millisecond),
 //	)
 func WithRetryConfig(maxAttempts uint, initDelay, maxDelay, maxJitter time.Duration) ClientOption {

@@ -59,7 +59,7 @@ func newCapturingClient(t *testing.T, opts ...ClientOption) (*Client, *captureEn
 			}
 		})
 	})
-	cl := NewClient("test", opts...)
+	cl := MustNewClient("test", opts...)
 	return cl, cap
 }
 
@@ -133,7 +133,7 @@ func TestWithTracePropagation_InjectAtLast(t *testing.T) {
 	otel.SetTextMapPropagator(propagation.TraceContext{})
 	t.Cleanup(func() { otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator()) })
 
-	cl := NewClient("test", WithTracePropagation())
+	cl := MustNewClient("test", WithTracePropagation())
 	if len(cl.lastMW) != 1 {
 		t.Fatalf("expected 1 lastMW (trace), got %d", len(cl.lastMW))
 	}

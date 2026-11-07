@@ -11,7 +11,7 @@ import (
 // client.WithRetryConfig(...) 添加到 c.hzOpts,hertz 内部 retry 引擎
 // 接管重试逻辑(不走我们手写 middleware)。
 func TestWithRetryConfig_AppendsHertzOption(t *testing.T) {
-	c := NewClient("test",
+	c := MustNewClient("test",
 		WithRetryConfig(3, 100*time.Millisecond, 1*time.Second, 50*time.Millisecond),
 	)
 	if c == nil {
@@ -26,7 +26,7 @@ func TestWithRetryConfig_AppendsHertzOption(t *testing.T) {
 // TestWithRetryConfig_ZeroMaxAttempts 验证 maxAttempts=0 走 Hertz 默认
 // (不 panic,client.NewClient 成功)。
 func TestWithRetryConfig_ZeroMaxAttempts(t *testing.T) {
-	c := NewClient("test",
+	c := MustNewClient("test",
 		WithRetryConfig(0, 0, 0, 0),
 	)
 	if c == nil {
@@ -37,7 +37,7 @@ func TestWithRetryConfig_ZeroMaxAttempts(t *testing.T) {
 // TestWithRetryConfig_CombinedWithCircuitBreaker 验证 WithRetryConfig 跟
 // WithCircuitBreaker 共存(场景:重试 + 熔断,跟生产用法一致)。
 func TestWithRetryConfig_CombinedWithCircuitBreaker(t *testing.T) {
-	c := NewClient("test",
+	c := MustNewClient("test",
 		WithRetryConfig(3, 100*time.Millisecond, 1*time.Second, 50*time.Millisecond),
 		WithCircuitBreaker("test-cb", gobreaker.Settings{Name: "test", Timeout: 1 * time.Second}),
 	)

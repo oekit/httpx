@@ -24,7 +24,7 @@ func TestOptionOrder_EndpointsFirst(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := NewClient("svc",
+	c := MustNewClient("svc",
 		WithEndpoints("http://10.0.0.1:8080", "http://10.0.0.2:8080"),
 		WithRefreshInterval(time.Hour),
 		WithSelector(sel),
@@ -50,7 +50,7 @@ func TestOptionOrder_SelectorFirst(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := NewClient("svc",
+	c := MustNewClient("svc",
 		WithSelector(sel),
 		WithRefreshInterval(time.Hour),
 		WithEndpoints("http://10.0.0.1:8080"),
@@ -70,7 +70,7 @@ func TestOptionOrder_SelectorFirst(t *testing.T) {
 // （默认 30s 只会在启动时立即刷新 1 次）。
 func TestOptionOrder_RefreshIntervalBeforeResolver(t *testing.T) {
 	resolver := &countingResolver{}
-	c := NewClient("svc",
+	c := MustNewClient("svc",
 		WithRefreshInterval(10*time.Millisecond),
 		WithServiceResolver(resolver),
 	)

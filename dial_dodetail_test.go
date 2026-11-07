@@ -21,7 +21,7 @@ func TestWithDialFunc_InstallsDialer(t *testing.T) {
 		dials = append(dials, addr)
 		return nil, errors.New("blocked")
 	}
-	c := NewClient("test", WithDialFunc(fn))
+	c := MustNewClient("test", WithDialFunc(fn))
 	if c == nil {
 		t.Fatal("NewClient returned nil")
 	}
@@ -38,7 +38,7 @@ func TestWithDialFunc_InstallsDialer(t *testing.T) {
 // 拨号层拒绝时请求失败，且错误透传给调用方（SSRF 拦截生效点）。
 func TestWithDialFunc_UsedForConnections(t *testing.T) {
 	srvURL, _ := jsonServer(t, http.StatusOK, `{}`)
-	c := NewClient("test",
+	c := MustNewClient("test",
 		WithBaseURL(srvURL),
 		WithDialFunc(func(addr string) (network.Conn, error) {
 			return nil, errors.New("blocked by dial guard")
@@ -73,7 +73,7 @@ func TestWithHertzOption_EscapeHatch(t *testing.T) {
 // （区别于 DoJSON 只解到 out）。
 func TestDoDetail_SuccessReturnsStatusAndRawBody(t *testing.T) {
 	srvURL, _ := jsonServer(t, http.StatusCreated, `{"id":7}`)
-	c := NewClient("test", WithBaseURL(srvURL))
+	c := MustNewClient("test", WithBaseURL(srvURL))
 	defer c.Close()
 
 	status, body, err := c.DoDetail(context.Background(), http.MethodPost, "/items", map[string]int{"n": 1})
@@ -92,7 +92,7 @@ func TestDoDetail_SuccessReturnsStatusAndRawBody(t *testing.T) {
 // status + body，同时携带 *ServiceError。
 func TestDoDetail_ErrorStillReturnsStatusAndBody(t *testing.T) {
 	srvURL, _ := jsonServer(t, http.StatusBadRequest, `{"error":"bad"}`)
-	c := NewClient("test", WithBaseURL(srvURL))
+	c := MustNewClient("test", WithBaseURL(srvURL))
 	defer c.Close()
 
 	status, body, err := c.DoDetail(context.Background(), http.MethodGet, "/bad", nil)
@@ -117,7 +117,7 @@ func TestDoDetail_ErrorStillReturnsStatusAndBody(t *testing.T) {
 // TestDoDetail_TransportError 验证传输层失败时 status=0、body 为 nil。
 func TestDoDetail_TransportError(t *testing.T) {
 	srvURL, _ := jsonServer(t, http.StatusOK, `{}`)
-	c := NewClient("test",
+	c := MustNewClient("test",
 		WithBaseURL(srvURL),
 		WithDialFunc(func(string) (network.Conn, error) {
 			return nil, errors.New("dial refused")

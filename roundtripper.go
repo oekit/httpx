@@ -43,12 +43,28 @@ type roundTripper struct {
 
 // NewRoundTripper 把 httpx Client 装进标准 http.RoundTripper（#8）。
 // service 与 opts 语义同 NewClient。
+//
+// 构造失败（含静态端点与动态 resolver 互斥等构造期冲突）直接 panic——
+// 桥接层为「一行 Transport 接入」保留无错误签名，panic 发生在初始化期、
+// 携带完整原因，不是请求路径上的运行期 panic。配置来自外部输入、需要
+// 显式判错的调用方用 [NewRoundTripperE]。
 func NewRoundTripper(service string, opts ...ClientOption) http.RoundTripper {
-	return &roundTripper{c: NewClient(service, opts...)}
+	return &roundTripper{c: MustNewClient(service, opts...)}
+}
+
+// NewRoundTripperE 是 [NewRoundTripper] 的显式错误版本（#83）：构造失败
+// 返回 error 而非 panic。语义同 NewRoundTripper。
+func NewRoundTripperE(service string, opts ...ClientOption) (http.RoundTripper, error) {
+	c, err := NewClient(service, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return &roundTripper{c: c}, nil
 }
 
 // StdClient 返回装好 Transport 的标准 http.Client（Timeout 留零——
 // 超时边界由 httpx 层管理：缺省 dial/read 30s，可经 WithTimeout/WithHertzOption 调整）。
+// 构造失败语义同 [NewRoundTripper]（panic）；需显式判错用 [NewRoundTripperE]。
 func StdClient(service string, opts ...ClientOption) *http.Client {
 	return &http.Client{Transport: NewRoundTripper(service, opts...)}
 }

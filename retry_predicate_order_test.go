@@ -58,7 +58,7 @@ func TestRetryIfFunc_ExplicitWinsRegardlessOfOptionOrder(t *testing.T) {
 			t.Cleanup(srv.Close)
 
 			opts := append([]ClientOption{WithEndpoints(srv.URL)}, tc.opts...)
-			cli := NewClient("svc", opts...)
+			cli := MustNewClient("svc", opts...)
 
 			_, _, err := cli.DoDetail(context.Background(), http.MethodPost, "/x", nil)
 			if err == nil {
@@ -82,7 +82,7 @@ func TestRetryIfFunc_DefaultStillRetriesNonIdempotent(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	cli := NewClient("svc",
+	cli := MustNewClient("svc",
 		WithEndpoints(srv.URL),
 		WithRetryConfig(3, 10*time.Millisecond, 20*time.Millisecond, 0),
 	)
@@ -103,7 +103,7 @@ func TestRetryIfFunc_ExplicitPredicateIsUsed(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	cli := NewClient("svc",
+	cli := MustNewClient("svc",
 		WithEndpoints(srv.URL),
 		WithRetryIfFunc(func(_ *protocol.Request, _ *protocol.Response, _ error) bool { return true }),
 		WithRetryConfig(3, 10*time.Millisecond, 20*time.Millisecond, 0),

@@ -52,7 +52,7 @@ func jsonServer(t *testing.T, status int, body string) (url string, requests <-c
 
 func TestGetJSON_HappyPath(t *testing.T) {
 	srvURL, _ := jsonServer(t, http.StatusOK, `{"name":"alice","age":30}`)
-	c := NewClient("test", WithBaseURL(srvURL))
+	c := MustNewClient("test", WithBaseURL(srvURL))
 	defer c.Close()
 	var got map[string]any
 	if err := c.GetJSON(context.Background(), "/users/1", &got); err != nil {
@@ -65,7 +65,7 @@ func TestGetJSON_HappyPath(t *testing.T) {
 
 func TestGetJSON_4xxError(t *testing.T) {
 	srvURL, _ := jsonServer(t, http.StatusNotFound, `{"error":"not found"}`)
-	c := NewClient("test", WithBaseURL(srvURL))
+	c := MustNewClient("test", WithBaseURL(srvURL))
 	defer c.Close()
 	var got map[string]any
 	err := c.GetJSON(context.Background(), "/missing", &got)
@@ -83,7 +83,7 @@ func TestGetJSON_4xxError(t *testing.T) {
 
 func TestGetJSON_5xxError(t *testing.T) {
 	srvURL, _ := jsonServer(t, http.StatusInternalServerError, `{"error":"boom"}`)
-	c := NewClient("test", WithBaseURL(srvURL))
+	c := MustNewClient("test", WithBaseURL(srvURL))
 	defer c.Close()
 	var got map[string]any
 	err := c.GetJSON(context.Background(), "/explode", &got)
@@ -105,7 +105,7 @@ func TestGetJSON_TruncatesLargeErrorBody(t *testing.T) {
 		big[i] = 'x'
 	}
 	srvURL, _ := jsonServer(t, http.StatusBadRequest, string(big))
-	c := NewClient("test", WithBaseURL(srvURL))
+	c := MustNewClient("test", WithBaseURL(srvURL))
 	defer c.Close()
 	err := c.GetJSON(context.Background(), "/big", nil)
 	if err == nil {
@@ -118,7 +118,7 @@ func TestGetJSON_TruncatesLargeErrorBody(t *testing.T) {
 
 func TestPostJSON_HappyPath(t *testing.T) {
 	srvURL, requests := jsonServer(t, http.StatusOK, `{"id":42}`)
-	c := NewClient("test", WithBaseURL(srvURL))
+	c := MustNewClient("test", WithBaseURL(srvURL))
 	defer c.Close()
 	var got map[string]any
 	body := map[string]any{"name": "alice", "age": 30}
@@ -147,7 +147,7 @@ func TestPostJSON_HappyPath(t *testing.T) {
 
 func TestPostJSON_5xxError(t *testing.T) {
 	srvURL, _ := jsonServer(t, http.StatusServiceUnavailable, "down")
-	c := NewClient("test", WithBaseURL(srvURL))
+	c := MustNewClient("test", WithBaseURL(srvURL))
 	defer c.Close()
 	err := c.PostJSON(context.Background(), "/x", nil, nil)
 	if err == nil {
@@ -164,7 +164,7 @@ func TestPostJSON_5xxError(t *testing.T) {
 
 func TestDoJSON_PutMethod(t *testing.T) {
 	srvURL, requests := jsonServer(t, http.StatusOK, `{"updated":true}`)
-	c := NewClient("test", WithBaseURL(srvURL))
+	c := MustNewClient("test", WithBaseURL(srvURL))
 	defer c.Close()
 	var got map[string]any
 	body := map[string]any{"key": "value"}
@@ -186,7 +186,7 @@ func TestDoJSON_PutMethod(t *testing.T) {
 
 func TestDoJSON_NilBody(t *testing.T) {
 	srvURL, _ := jsonServer(t, http.StatusOK, `{}`)
-	c := NewClient("test", WithBaseURL(srvURL))
+	c := MustNewClient("test", WithBaseURL(srvURL))
 	defer c.Close()
 	var got map[string]any
 	if err := c.DoJSON(context.Background(), http.MethodGet, "/no-body", nil, &got); err != nil {
@@ -196,7 +196,7 @@ func TestDoJSON_NilBody(t *testing.T) {
 
 func TestDoRaw_ReturnsRawBytes(t *testing.T) {
 	srvURL, _ := jsonServer(t, http.StatusOK, `plain text body`)
-	c := NewClient("test", WithBaseURL(srvURL))
+	c := MustNewClient("test", WithBaseURL(srvURL))
 	defer c.Close()
 	got, err := c.DoRaw(context.Background(), http.MethodGet, "/raw", nil)
 	if err != nil {
@@ -209,7 +209,7 @@ func TestDoRaw_ReturnsRawBytes(t *testing.T) {
 
 func TestDoRaw_5xxError(t *testing.T) {
 	srvURL, _ := jsonServer(t, http.StatusInternalServerError, "fail")
-	c := NewClient("test", WithBaseURL(srvURL))
+	c := MustNewClient("test", WithBaseURL(srvURL))
 	defer c.Close()
 	_, err := c.DoRaw(context.Background(), http.MethodGet, "/x", nil)
 	if err == nil {
@@ -219,7 +219,7 @@ func TestDoRaw_5xxError(t *testing.T) {
 
 func TestBearerToken_PropagatesToRequest(t *testing.T) {
 	srvURL, requests := jsonServer(t, http.StatusOK, `{}`)
-	c := NewClient("test", WithBaseURL(srvURL), WithBearerToken("secret-token-123"))
+	c := MustNewClient("test", WithBaseURL(srvURL), WithBearerToken("secret-token-123"))
 	defer c.Close()
 	if err := c.GetJSON(context.Background(), "/auth", nil); err != nil {
 		t.Fatalf("GetJSON: %v", err)
@@ -236,7 +236,7 @@ func TestBearerToken_PropagatesToRequest(t *testing.T) {
 
 func TestBasicAuth_PropagatesToRequest(t *testing.T) {
 	srvURL, requests := jsonServer(t, http.StatusOK, `{}`)
-	c := NewClient("test", WithBaseURL(srvURL), WithBasicAuth("user", "pass"))
+	c := MustNewClient("test", WithBaseURL(srvURL), WithBasicAuth("user", "pass"))
 	defer c.Close()
 	if err := c.GetJSON(context.Background(), "/auth", nil); err != nil {
 		t.Fatalf("GetJSON: %v", err)
@@ -257,7 +257,7 @@ func TestBasicAuth_PropagatesToRequest(t *testing.T) {
 
 func TestTraceID_PropagatesToOutgoingRequest(t *testing.T) {
 	srvURL, requests := jsonServer(t, http.StatusOK, `{}`)
-	c := NewClient("test",
+	c := MustNewClient("test",
 		WithBaseURL(srvURL),
 		WithOnBeforeRequest(func(ctx context.Context, req *protocol.Request) error {
 			if tid := traceid.FromContext(ctx); tid != "" {
@@ -290,7 +290,7 @@ func TestRetry_OnServerError(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	// maxAttempts=3 (1 + 2 retries), 走 Hertz 官方 retry 引擎
-	c := NewClient("test", WithBaseURL(srv.URL), WithRetryConfig(3, 10*time.Millisecond, 100*time.Millisecond, 5*time.Millisecond))
+	c := MustNewClient("test", WithBaseURL(srv.URL), WithRetryConfig(3, 10*time.Millisecond, 100*time.Millisecond, 5*time.Millisecond))
 	defer c.Close()
 	err := c.GetJSON(context.Background(), "/retry", nil)
 	if err == nil {
@@ -313,7 +313,7 @@ func TestRetry_DelayPolicyActive(t *testing.T) {
 	t.Cleanup(srv.Close)
 	// 1 次重试,退避基数 80ms → BackOffDelayPolicy 至少 80ms
 	// (attempts 从 0 或 1 起,延迟 80ms 或 160ms;Random 抖动 [0,5ms))
-	c := NewClient("test", WithBaseURL(srv.URL), WithRetryConfig(2, 80*time.Millisecond, 500*time.Millisecond, 5*time.Millisecond))
+	c := MustNewClient("test", WithBaseURL(srv.URL), WithRetryConfig(2, 80*time.Millisecond, 500*time.Millisecond, 5*time.Millisecond))
 	defer c.Close()
 	start := time.Now()
 	_ = c.GetJSON(context.Background(), "/retry-delay", nil)
@@ -340,7 +340,7 @@ func TestRetry_StopsOnSuccess(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	// maxAttempts=4 (允许 3 次重试),2 次成功即可
-	c := NewClient("test", WithBaseURL(srv.URL), WithRetryConfig(4, 10*time.Millisecond, 100*time.Millisecond, 5*time.Millisecond))
+	c := MustNewClient("test", WithBaseURL(srv.URL), WithRetryConfig(4, 10*time.Millisecond, 100*time.Millisecond, 5*time.Millisecond))
 	defer c.Close()
 	var got map[string]any
 	if err := c.GetJSON(context.Background(), "/retry-then-ok", &got); err != nil {
@@ -362,7 +362,7 @@ func TestCircuitBreaker_OpensOnConsecutiveFailures(t *testing.T) {
 		_, _ = io.WriteString(w, "boom")
 	}))
 	t.Cleanup(srv.Close)
-	c := NewClient("test", WithBaseURL(srv.URL), WithCircuitBreaker("test-cb", gobreaker.Settings{
+	c := MustNewClient("test", WithBaseURL(srv.URL), WithCircuitBreaker("test-cb", gobreaker.Settings{
 		Interval: 10 * time.Second,
 		Timeout:  10 * time.Second,
 		ReadyToTrip: func(counts gobreaker.Counts) bool {
@@ -389,7 +389,7 @@ func TestCircuitBreaker_OpensOnConsecutiveFailures(t *testing.T) {
 func TestMetrics_TargetLabel_AppearsInRegistry(t *testing.T) {
 	srvURL, _ := jsonServer(t, http.StatusOK, `{}`)
 	reg := prometheus.NewRegistry()
-	c := NewClient("test", WithBaseURL(srvURL), WithMetrics(reg, "ekit_test"), WithTarget("user-svc"))
+	c := MustNewClient("test", WithBaseURL(srvURL), WithMetrics(reg, "ekit_test"), WithTarget("user-svc"))
 	defer c.Close()
 	if err := c.GetJSON(context.Background(), "/m", nil); err != nil {
 		t.Fatalf("GetJSON: %v", err)
@@ -423,7 +423,7 @@ func TestMetrics_TargetLabel_AppearsInRegistry(t *testing.T) {
 func TestMetrics_TargetLabel_DefaultsToDefault(t *testing.T) {
 	srvURL, _ := jsonServer(t, http.StatusOK, `{}`)
 	reg := prometheus.NewRegistry()
-	c := NewClient("test", WithBaseURL(srvURL), WithMetrics(reg, "ekit_test"))
+	c := MustNewClient("test", WithBaseURL(srvURL), WithMetrics(reg, "ekit_test"))
 	defer c.Close()
 	if err := c.GetJSON(context.Background(), "/m", nil); err != nil {
 		t.Fatalf("GetJSON: %v", err)
@@ -457,7 +457,7 @@ func TestResolveEndpoint_PicksAndConcatenates(t *testing.T) {
 	t.Cleanup(srv.Close)
 	host, port := parseHostPort(srv.URL)
 	endpoint := "http://" + host + ":" + intToStr(port)
-	c := NewClient("test", WithEndpoints(endpoint))
+	c := MustNewClient("test", WithEndpoints(endpoint))
 	defer c.Close()
 	if err := c.GetJSON(context.Background(), "/api/v1/items", nil); err != nil {
 		t.Fatalf("GetJSON: %v", err)
@@ -471,7 +471,7 @@ func TestResolveEndpoint_PicksAndConcatenates(t *testing.T) {
 
 func TestResolveEndpoint_NoManager(t *testing.T) {
 	srvURL, _ := jsonServer(t, http.StatusOK, `{}`)
-	c := NewClient("test", WithBaseURL(srvURL))
+	c := MustNewClient("test", WithBaseURL(srvURL))
 	defer c.Close()
 	if err := c.GetJSON(context.Background(), "/direct", nil); err != nil {
 		t.Fatalf("GetJSON: %v", err)
@@ -625,7 +625,7 @@ func TestRawDo_BaseURLAuthAndCookieJar(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	c := NewClient("test",
+	c := MustNewClient("test",
 		WithBaseURL(srv.URL),
 		WithBasicAuth("u1", "p1"),
 		WithCookieJar(jar),
