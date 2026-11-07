@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"mime/multipart"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/cloudwego/hertz/pkg/protocol"
@@ -163,7 +165,10 @@ func (c *Client) DoDetail(ctx context.Context, method, path string, body any) (i
 	return status, raw, nil
 }
 
-// UploadFile 上传文件 (multipart/form-data)。
+// UploadFile 上传本地文件 (multipart/form-data)：读取 filePath 全部内容
+// 作为文件 part（filename 取 filepath.Base(filePath)——不带本地目录，
+// 避免泄漏服务器目录结构），额外表单字段经 extraFields 透传（#86）。
+// 内存中的字节用 UploadBytes。
 func (c *Client) UploadFile(ctx context.Context, path, filePath, fieldName string, extraFields map[string]string, out any) error {
 	priority := GetPriority(ctx)
 	if c.priorityQueue != nil {
@@ -173,8 +178,17 @@ func (c *Client) UploadFile(ctx context.Context, path, filePath, fieldName strin
 		defer c.priorityQueue.Release(priority)
 	}
 
+	// 修复前（#86）本方法把 filePath 直接当 filename 传给 multipart 构造
+	// 且 data 恒为 nil——上传请求成功发出但文件 part 内容恒为空（空文件），
+	// 且 part filename 是完整本地路径（泄漏服务器目录结构）。
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return fmt.Errorf("%s: read upload file: %w", c.service, err)
+	}
+	fileName := filepath.Base(filePath)
+
 	fullURL, lbDone := c.resolveEndpoint(ctx, path)
-	body, contentType, err := buildMultipartFileBytes(fieldName, filePath, nil, extraFields)
+	body, contentType, err := buildMultipartFileBytes(fieldName, fileName, data, extraFields)
 	if err != nil {
 		return fmt.Errorf("%s: build multipart: %w", c.service, err)
 	}

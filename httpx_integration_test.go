@@ -9,6 +9,8 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -782,4 +784,85 @@ func TestClient_Close_ReleasesIdleConnections(t *testing.T) {
 	}
 
 	c.Close() // 幂等：重复 Close 不 panic
+}
+
+// TestUploadFile_UploadsFileContent 回归（#86）：UploadFile 必须读取本地文件
+// 内容作为文件 part——修复前 data 恒传 nil，上传请求成功发出但文件 part
+// 内容恒为空（空文件），且 part filename 是完整本地路径（泄漏服务器目录
+// 结构）。本测试断言服务端实际收到的文件名（base 名）与内容。
+func TestUploadFile_UploadsFileContent(t *testing.T) {
+	content := []byte("PDF-BYTES\x00\x01\x02report-payload") // 带二进制，防路径串误当内容
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "nested", "report.pdf") // 带子目录：filename 必须只是 base 名
+	if err := os.MkdirAll(filepath.Dir(filePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filePath, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	var gotContent []byte
+	var gotFilename, gotScene string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		f, fh, err := r.FormFile("upload")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		defer f.Close()
+		b, err := io.ReadAll(f)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		gotContent = b
+		gotFilename = fh.Filename
+		gotScene = r.FormValue("scene")
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	c := MustNewClient("test", WithBaseURL(srv.URL))
+	defer c.Close()
+
+	var out map[string]any
+	if err := c.UploadFile(context.Background(), "/upload", filePath, "upload",
+		map[string]string{"scene": "daily"}, &out); err != nil {
+		t.Fatalf("UploadFile: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if string(gotContent) != string(content) {
+		t.Errorf("服务端收到的文件内容 = %q, want %q（文件未被读取，上传了空文件）", gotContent, content)
+	}
+	if gotFilename != "report.pdf" {
+		t.Errorf("服务端收到的 filename = %q, want %q（filename 应取 base 名，不泄漏本地路径）", gotFilename, "report.pdf")
+	}
+	if gotScene != "daily" {
+		t.Errorf("extra field scene = %q, want %q", gotScene, "daily")
+	}
+}
+
+// TestUploadFile_MissingFileError 回归（#86）：文件读取失败显式报错
+// （修复前不读文件，错误无从暴露）。
+func TestUploadFile_MissingFileError(t *testing.T) {
+	c := MustNewClient("test", WithBaseURL("http://127.0.0.1:1"))
+	defer c.Close()
+	err := c.UploadFile(context.Background(), "/upload",
+		filepath.Join(t.TempDir(), "no-such-file.bin"), "upload", nil, nil)
+	if err == nil {
+		t.Fatal("expected error for missing file, got nil")
+	}
+	if !strings.Contains(err.Error(), "read upload file") {
+		t.Errorf("error should mention read upload file, got %q", err.Error())
+	}
 }
