@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -679,4 +680,61 @@ func TestRawDo_BaseURLAuthAndCookieJar(t *testing.T) {
 	if !strings.Contains(finalCookie, "sid=abc123") {
 		t.Errorf("cookie jar not injected, cookie=%q", finalCookie)
 	}
+}
+
+// TestClient_Close_ReleasesIdleConnections 回归（#84）：Close 除停止
+// EndpointManager 刷新循环外，还必须释放底层 Hertz client 的空闲连接池——
+// 修复前底层 client 从不关闭，短生命周期场景（测试反复建 Client、临时任务
+// 客户端）每次泄漏一套连接池，长跑进程累积。
+func TestClient_Close_ReleasesIdleConnections(t *testing.T) {
+	var mu sync.Mutex
+	openConns := make(map[net.Conn]struct{})
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "ok")
+	}))
+	// ConnState 必须在 Start 前挂上（Server 字段运行期不可变，避免与
+	// accept 循环的读写竞争）
+	srv.Config.ConnState = func(c net.Conn, s http.ConnState) {
+		mu.Lock()
+		if s == http.StateClosed {
+			delete(openConns, c)
+		} else {
+			openConns[c] = struct{}{}
+		}
+		mu.Unlock()
+	}
+	srv.Start()
+	t.Cleanup(srv.Close)
+	countOpen := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(openConns)
+	}
+
+	c := MustNewClient("test", WithBaseURL(srv.URL))
+	if err := c.GetJSON(context.Background(), "/keepalive", nil); err != nil {
+		t.Fatalf("GetJSON: %v", err)
+	}
+
+	// keep-alive：请求完成后连接留在客户端池中（服务端视角已 idle 但仍打开）
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && countOpen() == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := countOpen(); got == 0 {
+		t.Fatal("expected a pooled keep-alive connection before Close")
+	}
+
+	c.Close()
+	// 底层 Hertz client 的空闲连接被主动关闭：服务端观察到 StateClosed
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && countOpen() != 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := countOpen(); got != 0 {
+		t.Fatalf("Close 后仍有 %d 条连接未释放（底层 Hertz client 未关闭）", got)
+	}
+
+	c.Close() // 幂等：重复 Close 不 panic
 }

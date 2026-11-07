@@ -160,10 +160,19 @@ func (c *Client) setConstructErr(err error) {
 	}
 }
 
-// Close 关闭客户端，释放资源。
+// Close 关闭客户端，释放资源：停止 EndpointManager 刷新循环，并关闭底层
+// Hertz client 的空闲连接池（hostClient 连接与清理协程随之收敛，#84）。
+//
+// 说明：钉住的 hertz v0.10.6 *client.Client 没有 Close() error，可用的
+// 释放口是 CloseIdleConnections()——关闭全部 hostClient 的空闲连接后，
+// hertz 的连接清理协程按 ShouldRemove 逐个回收 hostClient 并退出。
+// Close 幂等，可安全重复调用。
 func (c *Client) Close() {
 	if c.endpointManager != nil {
 		c.endpointManager.Stop()
+	}
+	if c.client != nil {
+		c.client.CloseIdleConnections()
 	}
 }
 
