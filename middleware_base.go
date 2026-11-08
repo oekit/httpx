@@ -42,6 +42,12 @@ func (c *Client) baseMiddleware() client.Middleware {
 				if u, err := url.Parse(string(req.URI().FullURI())); err == nil {
 					jarURL = u
 					for _, ck := range c.cookieJar.Cookies(jarURL) {
+						// 调用方已设同名 cookie 时跳过（#113）：SetCookie 走
+						// setArg 同键替换，直接注入会静默改写调用方值——对齐
+						// 本中间件「不覆盖调用方已有设置」的承诺
+						if len(req.Header.Cookie(ck.Name)) > 0 {
+							continue
+						}
 						req.Header.SetCookie(ck.Name, ck.Value)
 					}
 				}

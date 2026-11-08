@@ -34,9 +34,14 @@ func (c *Client) DoJSON(ctx context.Context, method, path string, body any, out 
 
 // DoCodec 使用指定编解码器发送请求：body 经 codec.Marshal 序列化并设置
 // 对应 Content-Type；响应按其 Content-Type 反查 codec 反序列化到 out
-// （查不到回退请求 codec）。
+// （查不到回退请求 codec）。codecName 未注册时返回 error 而非 panic（#114，
+// 与 #83「失败显式返回、不升级为进程死亡」同族契约）：codec 名常来自配置，
+// Must 语义只保留给显式调用 codec.MustGetCodec 的场景。
 func (c *Client) DoCodec(ctx context.Context, codecName, method, path string, body any, out any) error {
-	cd := codec.MustGetCodec(codecName)
+	cd := codec.GetCodec(codecName)
+	if cd == nil {
+		return fmt.Errorf("%s: unknown codec %q", c.service, codecName)
+	}
 
 	priority := GetPriority(ctx)
 	if c.priorityQueue != nil {
