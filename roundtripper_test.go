@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/sony/gobreaker"
 )
@@ -143,15 +144,21 @@ func TestRoundTripper_CircuitBreakerOpen(t *testing.T) {
 		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL+"/", nil)
 		return req
 	}
-	// 第一次：执行并失败（500），熔断计数达到阈值切 open（失败路径 resp 可能为 nil，
-	// 拿得到就关闭）
+	// 第一次：执行并按标准库语义返回 500 响应（非 2xx 非错误，#107），但 5xx
+	// 计入熔断统计，计数达到阈值切 open（resp 拿得到就关闭）
 	respFirst, firstErr := rt.RoundTrip(newReq())
-	if firstErr == nil {
-		t.Fatal("first request must fail (server 500)")
+	if firstErr != nil {
+		t.Fatalf("first request must stay non-error (stdlib semantics, #107), err = %v", firstErr)
 	}
-	if respFirst != nil {
-		respFirst.Body.Close()
+	if respFirst == nil || respFirst.StatusCode != http.StatusInternalServerError {
+		status := -1
+		if respFirst != nil {
+			status = respFirst.StatusCode
+			respFirst.Body.Close()
+		}
+		t.Fatalf("first request status = %d, want 500", status)
 	}
+	respFirst.Body.Close()
 	if executed.Load() != 1 {
 		t.Fatalf("executed = %d, want 1", executed.Load())
 	}
@@ -213,5 +220,87 @@ func TestRoundTripper_ExplicitPort(t *testing.T) {
 	mu.Unlock()
 	if string(body) != "ok" || got != "/token?grant=cc" {
 		t.Fatalf("body=%q path=%q, want ok /token?grant=cc", body, got)
+	}
+}
+
+// TestRoundTripper_URISchemeMarkerInQuery 回归（#106）：Client 未配置
+// 端点/baseURL 时，「fullURL 是否自带 scheme://host」必须解析式判定——
+// path?query 里含字面量 "://"（?to=http://x）的合法形态曾让子串匹配误判
+// ⇒ 请求既无 scheme 也无 host，被拨到默认 :80（凭证随错误寻址泄漏）。
+func TestRoundTripper_URISchemeMarkerInQuery(t *testing.T) {
+	var mu sync.Mutex
+	var gotPath, gotQuery, gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		gotPath, gotQuery, gotAuth = r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization")
+		mu.Unlock()
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	client := StdClient("bridge-scheme-marker")
+
+	// 未编码的 "://" 出现在 query：必须仍按请求自身的 scheme://host 拨号
+	resp, err := client.Get(srv.URL + "/redirect?to=http://example.com/x")
+	if err != nil {
+		t.Fatalf("query contains :// must not lose scheme/host, err = %v", err)
+	}
+	defer resp.Body.Close()
+	mu.Lock()
+	path, query := gotPath, gotQuery
+	mu.Unlock()
+	if path != "/redirect" || query != "to=http://example.com/x" {
+		t.Fatalf("request misaddressed: server saw path=%q query=%q", path, query)
+	}
+
+	// path 中段含 "://" 同理（完整 URI 形态）
+	resp2, err := client.Get(srv.URL + "/q?a=b%3A%2F%2F")
+	if err != nil {
+		t.Fatalf("encoded variant err = %v", err)
+	}
+	defer resp2.Body.Close()
+
+	// 凭证头必须随请求原样到达目标（错误寻址即泄漏给非预期接收方）
+	reqWithAuth, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
+		srv.URL+"/auth?callback=http://cb.example/h", nil)
+	reqWithAuth.Header.Set("Authorization", "Bearer caller-token")
+	resp3, err := client.Do(reqWithAuth)
+	if err != nil {
+		t.Fatalf("auth variant err = %v", err)
+	}
+	defer resp3.Body.Close()
+	mu.Lock()
+	auth := gotAuth
+	mu.Unlock()
+	if auth != "Bearer caller-token" {
+		t.Fatalf("Authorization misrouted: server saw %q", auth)
+	}
+}
+
+// TestRoundTripper_BreakerKeepsNon2xxResponse 回归（#107 桥接侧）：开熔断后
+// 非 2xx 仍不是错误（标准库语义）——500 响应必须原样回到调用方（状态码 +
+// 响应体），修复前 5xx 被熔断中间件转成普通 error，响应体丢失。
+func TestRoundTripper_BreakerKeepsNon2xxResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("boom-body-detail"))
+	}))
+	defer srv.Close()
+
+	rt := NewRoundTripper("bridge-breaker-5xx", WithBaseURL(srv.URL),
+		WithCircuitBreaker("bridge-breaker-5xx", gobreaker.Settings{Interval: 10 * time.Second}))
+	defer rt.(*roundTripper).Close()
+
+	resp, err := rt.RoundTrip(httptest.NewRequest(http.MethodGet, srv.URL+"/500", nil))
+	if err != nil {
+		t.Fatalf("5xx with breaker must stay non-error (stdlib semantics), err = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "boom-body-detail" {
+		t.Fatalf("body = %q, want boom-body-detail（响应体不得丢失）", body)
 	}
 }

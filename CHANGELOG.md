@@ -1,3 +1,17 @@
+## [v0.8.16] — 2026-11-08
+
+- fix(bridge): RoundTrip 的「fullURL 是否自带 scheme://host」改解析式判定——path?query 里含字面量 "://"（如 `?to=http://x`）不再被误判为已有 scheme，请求不再丢失 scheme/host 被拨到默认 :80（Authorization 等凭证随错误寻址泄漏的风险面一并关闭）（#106）
+- fix(options): WithCircuitBreaker 只管放行/统计，5xx 不再转成普通 error 外抛——引擎层 *ServiceError（含状态码与响应体）路径恢复可达（doc.go 明写的 `errors.As` 写法在开熔断后不再恒 false），桥接层「非 2xx 非错误」标准库语义恢复；5xx 仍计入熔断失败统计（gobreaker IsSuccessful 钩子照常生效、可否决计数）（#107）
+- fix(loadbalance): p2c 采样起点随 Select 返回的 done 闭包走（每请求独立 time.Time）——修复前起点按「地址」存共享 map，同址并发请求互相覆盖时间戳，EWMA 学不到真实延迟、慢/故障节点永不摘流；候选只剩 1 个的早退分支同样建立采样（修复前整段丢弃）（#108）
+- fix(codec): form 编解码整数按目标字段位宽解析、越界报错——修复前 64 位解析后 `SetInt/SetUint` 静默截断（服务端返回 300 写进 int8 字段变 44 且 err 为 nil），与 encoding/json 越界报错语义对齐（#109）
+- fix(codec): form 解码实现逗号分隔切片（`k=a,b,c` → `[a b c]`，与重复键形态并存 `k=1,2&k=3` → `[1 2 3]`，切分后 TrimSpace）——类型注释承诺的解码形态此前不存在，逗号串被整体塞进单个元素（#110）
+- fix(codec): form `form:",omitempty"` 空名 tag 回退字段名（编码/解码两侧对称）——修复前键名变空串：编码出 `=v` 无名参数、解码侧空键查值恒零值（#111）
+- fix(endpoint): resolveEndpoint 拼接前归一分隔符（base 去尾 `/`、path 补前导 `/`）——path 缺前导 `/` 不再把 host 吃进 path（`http://h:8080` + `api/x` ⇒ `http://h:8080api/x`，拨号报误导性 unknown port），baseURL/静态端点/选点失败降级三分支同修（#112）
+- fix(middleware): cookie jar 注入跳过调用方已设的同名 cookie——`SetCookie` 同键替换曾静默改写调用方值，对齐 base 中间件「不覆盖调用方已有设置」的注释承诺（无冲突的 jar cookie 照常注入）（#113）
+- fix(request): DoCodec 的 codec 名解析改 Get 语义，未注册返回 error——修复前 `MustGetCodec` 在请求路径上 panic（codec 名来自配置时字符串即可触发进程死亡，#83「失败显式返回」同族契约）（#114）
+
+关联问题单：httpx#106、httpx#107、httpx#108、httpx#109、httpx#110、httpx#111、httpx#112、httpx#113、httpx#114。
+
 ## [v0.8.15] — 2026-11-08
 
 - build: 依赖地板对齐——本版把 oekit 依赖地板抬到各依赖当前最新已发布版本（matrix-tools/scripts/align_floors.py 维护轮）
