@@ -262,3 +262,58 @@ func TestSelectorP2CSingleNode(t *testing.T) {
 		t.Fatalf("single node: %v %v %v", n, done, err)
 	}
 }
+
+// TestSelectorP2CSampleStartPerRequest 回归（#108）：采样起点必须随请求走
+// （done 闭包捕获独立 time.Time）。修复前起点按「地址」存进共享 map——同址
+// 并发请求互相覆盖时间戳，先发请求的 done 用「后一次 Select 时刻」算耗时，
+// 采样被压到接近 0，EWMA 永远学不到真实延迟，慢节点永不摘流。
+func TestSelectorP2CSampleStartPerRequest(t *testing.T) {
+	s := newP2CSelector()
+	// 两节点同址：Select 无论命中哪个实例，地址都是 same:1，精确复现
+	// 「同址覆盖起点」
+	nodes := NodesFrom([]string{"a#1", "a#2"},
+		func(string) string { return "same:1" }, func(string) float64 { return 1 },
+		nil, func(string) string { return "svc" })
+
+	ctx := context.Background()
+	_, done1, err := s.Select(ctx, nodes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(40 * time.Millisecond) // 慢请求在途
+	_, _, err = s.Select(ctx, nodes)  // 第二次选点：修复前覆盖同址采样起点
+	if err != nil {
+		t.Fatal(err)
+	}
+	done1(ctx, DoneInfo{}) // 慢请求回写：采样必须 ≈ 40ms，而非被覆盖后的 ≈ 0
+
+	s.mu.Lock()
+	ewma := s.ewma["same:1"]
+	s.mu.Unlock()
+	// 40ms 采样经 α=0.8 首次回写：EWMA ≈ 40ms*0.2 = 8ms，远超被覆盖时的微秒级
+	if ewma < float64((5 * time.Millisecond).Nanoseconds()) {
+		t.Fatalf("EWMA not fed by per-request sample: %v nanos (< 5ms)", ewma)
+	}
+}
+
+// TestSelectorP2CSingleNodeRecordsSample 回归（#108 附带）：候选只剩 1 个时
+// 的早退分支同样要建立采样——修复前该分支从不写起点，done 无从回写，
+// 单节点场景 EWMA 永不更新。
+func TestSelectorP2CSingleNodeRecordsSample(t *testing.T) {
+	s := newP2CSelector()
+	nodes := nodesOf("only")
+	ctx := context.Background()
+	_, done, err := s.Select(ctx, nodes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(40 * time.Millisecond)
+	done(ctx, DoneInfo{})
+
+	s.mu.Lock()
+	ewma := s.ewma["only"]
+	s.mu.Unlock()
+	if ewma < float64((5 * time.Millisecond).Nanoseconds()) {
+		t.Fatalf("single-node branch dropped sampling: EWMA = %v nanos", ewma)
+	}
+}
