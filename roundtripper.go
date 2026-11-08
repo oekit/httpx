@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/cloudwego/hertz/pkg/protocol"
@@ -103,8 +104,13 @@ func (rt *roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	// 标准 RoundTripper 语义（#9）：Client 未配置端点/baseURL 时，解析结果只是
 	// path?query（无 scheme://host），目标 = http.Request 自身的 scheme://host
 	// ——显式端口必须原样进入拨号寻址（旧版在此丢失 host:port，非 80/443 端点
-	// 全部落默认 80）。baseURL/Endpoints/NNS 模式的解析结果自带 scheme，不受影响
-	if !strings.Contains(fullURL, "://") && req.URL.Host != "" {
+	// 全部落默认 80）。baseURL/Endpoints/NNS 模式的解析结果自带 scheme，不受影响。
+	//
+	// 「是否已带 scheme://host」必须解析式判定（#106）：fullURL 来自
+	// RequestURI（path?query），是调用方可控内容——?to=http://x 这类 query 里
+	// 含字面量 "://" 的合法形态会让子串匹配误判为「已有 scheme」⇒ 请求既无
+	// scheme 也无 host，被拨到默认 :80（Authorization 等凭证随错误寻址泄漏）。
+	if !hasAbsoluteHost(fullURL) && req.URL.Host != "" {
 		scheme := req.URL.Scheme
 		if scheme == "" {
 			scheme = "http"
@@ -184,4 +190,12 @@ func skipBridgeHeader(key string) bool {
 		return true
 	}
 	return false
+}
+
+// hasAbsoluteHost 解析式判定 s 是否已带 scheme://host（#106）：url.Parse 出
+// Host 非空才算绝对 URL——子串匹配 "://" 会被 path/query 里的字面量
+// （如 ?to=http://x）误触发，请求随之丢失 scheme/host 被拨向默认 :80。
+func hasAbsoluteHost(s string) bool {
+	u, err := url.Parse(s)
+	return err == nil && u.Host != ""
 }

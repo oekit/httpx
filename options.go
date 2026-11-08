@@ -245,8 +245,12 @@ func WithCircuitBreaker(name string, settings gobreaker.Settings) ClientOption {
 					if err != nil {
 						return nil, err
 					}
-					if resp.StatusCode() >= 500 {
-						return nil, fmt.Errorf("server error: %d", resp.StatusCode())
+					if code := resp.StatusCode(); code >= 500 {
+						// 5xx 只计熔断失败统计，不外抛（#107）：标记错误仅在
+						// Execute 内部存活，让 gobreaker（默认 IsSuccessful：
+						// 非 nil 即失败；用户自定义 IsSuccessful 照常生效）把
+						// 5xx 计入失败；出 Execute 后按「非 2xx 非错误」透传。
+						return nil, &httpStatusError{code: code}
 					}
 					return nil, nil
 				})
@@ -257,12 +261,31 @@ func WithCircuitBreaker(name string, settings gobreaker.Settings) ClientOption {
 						}
 						return ErrCircuitOpen
 					}
+					// 5xx 标记错误：剥掉，响应原样交给上层——引擎层
+					// handleResponse 转成携带状态码与响应体的 *ServiceError，
+					// 桥接层按标准库语义返回 500 响应（#107）。修复前
+					// fmt.Errorf("server error: %d") 直接外抛：响应体丢失、
+					// errors.As(&ServiceError) 写法在开熔断后恒 false、
+					// 桥接层「非 2xx 非错误」承诺被打破。
+					var statusErr *httpStatusError
+					if errors.As(execErr, &statusErr) {
+						return nil
+					}
 					return execErr
 				}
 				return nil
 			}
 		})
 	}
+}
+
+// httpStatusError 是熔断中间件内部的 5xx 标记错误（#107）：仅存活于
+// breaker.Execute 内部，作用是把 5xx 计入熔断失败统计；Execute 返回后由
+// 中间件剥掉（errors.As 判定），不外抛给调用方。
+type httpStatusError struct{ code int }
+
+func (e *httpStatusError) Error() string {
+	return fmt.Sprintf("server error: %d", e.code)
 }
 
 // WithRetryConfig 配置请求重试策略,走 Hertz 官方 client.WithRetryConfig。
