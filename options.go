@@ -80,6 +80,47 @@ func WithBasicAuth(user, password string) ClientOption {
 	}
 }
 
+// WithHeaders 设置**每请求注入**的静态自定义头（#128），典型场景是静态
+// API-Key（`WithHeaders(map[string]string{"X-API-Key": key})`）。
+//
+// 与 WithBearerToken/WithBasicAuth 同层：选项面已有的两个头注入选项是鉴权头
+// 的特定形态，通用「静态自定义头」此前无一等选项，下游每个静态 API-Key 都要
+// 手搓一个 WithOnBeforeRequest 闭包（3 处实证，其中 2 处纯静态）。
+//
+// 语义与边界：
+//   - 实现为引擎预置的请求前置中间件（与 WithOnBeforeRequest 同一机制）：每个
+//     请求对每个 k/v 执行 SetHeader——无条件 Set，覆盖请求上已设的同名值；
+//   - 对全部请求路径生效（封装方法与裸 Hertz().Do 一致，走中间件链保证）；
+//   - 用户可继续叠加自己的 OnBeforeRequest 闭包做动态签名/时间戳等：闭包注册
+//     在静态头之后（内层）执行，同名键以闭包为准——静态值兜底、动态值覆盖；
+//   - 多次调用 WithHeaders/WithHeader 按键合并、后写者赢（构造期语义，请求期
+//     只读 map，并发安全）；
+//   - 若声明了 Authorization，会覆盖 WithBearerToken/WithBasicAuth 注入的鉴权
+//     头（静态头在 base 鉴权补齐之后执行 Set）——API-Key 形态的鉴权这正是
+//     目标场景；Bearer/Basic 与 API-Key 混用属于罕见的显式声明，以静态头为准。
+//
+// 值应为常量（静态）：token 生命周期内轮换一次的场景在构造期重建 Client，
+// 或经 WithOnBeforeRequest 闭包每请求现算。
+func WithHeaders(headers map[string]string) ClientOption {
+	return func(c *Client) {
+		if len(headers) == 0 {
+			return
+		}
+		if c.headers == nil {
+			c.headers = make(map[string]string, len(headers))
+		}
+		for k, v := range headers {
+			c.headers[k] = v
+		}
+	}
+}
+
+// WithHeader 设置单个静态自定义头（#128），等价 WithHeaders(map[string]string{key: value})。
+// 多个头逐条声明时比拼 map 更顺手；成批声明用 WithHeaders。
+func WithHeader(key, value string) ClientOption {
+	return WithHeaders(map[string]string{key: value})
+}
+
 // WithCookieJar 为客户端设置 Cookie Jar。
 // 通过 base 中间件在请求前注入 Cookie、响应后回收 Set-Cookie，
 // 对全部请求路径生效（含裸 Hertz().Do）。
@@ -304,8 +345,9 @@ func (e *httpStatusError) Error() string {
 // ⚠️ 重试触发条件(与 Hertz 默认不同,带幂等方法门 #85):
 //
 //	Hertz 官方 DefaultRetryIf 仅在幂等方法 + 网络错误时重试,不重试 5xx。
-//	ekit WithRetryConfig 默认重试「幂等方法/无 body 请求」上的 5xx +
-//	network error——比 Hertz 宽(补 5xx),比旧版「不看方法一律重试」严。
+//	ekit WithRetryConfig 默认重试「幂等方法」上的 5xx + network error——
+//	比 Hertz 宽(补 5xx),比旧版「不看方法一律重试」严;幂等门只按方法判定,
+//	无 body 的 POST 同样判非幂等(#129:副作用在方法+路径上,不在 payload 里)。
 //	旧版默认对 POST 等**非幂等请求**的 5xx 无条件重放,网关恰好超时但
 //	后端已实际写入时会重复下单/重复创建——「保持兼容」不等于「安全默认」。
 //	需要放开旧语义(任何方法都重试)时,经 WithRetryIfFunc 显式声明。
@@ -349,13 +391,14 @@ func WithRetryConfig(maxAttempts uint, initDelay, maxDelay, maxJitter time.Durat
 	}
 }
 
-// defaultRetryIf 是 WithRetryConfig 注入的默认重试条件（#85）：
+// defaultRetryIf 是 WithRetryConfig 注入的默认重试条件（#85，#129 收口）：
 //
-//	幂等方法/无 body 请求 && (network error | 5xx)
+//	幂等方法 && (network error | 5xx)
 //
-// 幂等门对 network error 同样生效——POST 超时时后端可能已收到并写入，
-// 重放与 5xx 重放同样是重复下单级风险。需要旧「不看方法」语义的调用方
-// 经 WithRetryIfFunc 显式放开。
+// 幂等门只按方法判定（#129：无 body 的 POST 同样判非幂等——副作用在方法+路径
+// 上，不在 payload 里），对 network error 同样生效——POST 超时时后端可能已
+// 收到并写入，重放与 5xx 重放同样是重复下单级风险。需要旧「不看方法」语义
+// 或重放 POST 的调用方经 WithRetryIfFunc 显式放开。
 func defaultRetryIf(req *protocol.Request, resp *protocol.Response, err error) bool {
 	if req != nil && !idempotentForRetry(req) {
 		return false
@@ -366,16 +409,25 @@ func defaultRetryIf(req *protocol.Request, resp *protocol.Response, err error) b
 	return resp != nil && resp.StatusCode() >= 500
 }
 
-// idempotentForRetry 判定请求对默认重试是否安全：幂等方法（GET/HEAD/
-// OPTIONS/PUT/DELETE/TRACE，对齐 hertz isIdempotent 的方法集）或无 body
-// 请求（无 body 的 POST 重放无副作用面）。
+// idempotentForRetry 判定请求对默认重试是否安全：只按**方法**判定——幂等
+// 方法（GET/HEAD/OPTIONS/PUT/DELETE/TRACE，对齐 hertz isIdempotent 的方法集）。
+//
+// #129：删除旧版「无 body 即幂等」兜底（`len(req.Body()) == 0`）。空 body 的
+// POST 恰恰是副作用型接口最常见的形态——副作用在**方法 + 路径**上，不在
+// payload 里（`POST /pay`、`POST /orders/{id}/cancel`、`POST /users/{id}/activate`…），
+// 网关超时但后端已实际写入时，重放即重复下单/重复扣款/重复取消。旧兜底把
+// 风险最高的一类 POST（空 body + 纯路径语义）留在了重放区，与 #85 的幂等门
+// 意图直接冲突。
+//
+// 确实需要重放 POST 的调用方经 WithRetryIfFunc 显式声明（显式谓词永远赢，
+// 与 option 顺序无关，#41）。
 func idempotentForRetry(req *protocol.Request) bool {
 	switch string(req.Method()) {
 	case http.MethodGet, http.MethodHead, http.MethodOptions,
 		http.MethodPut, http.MethodDelete, http.MethodTrace:
 		return true
 	}
-	return len(req.Body()) == 0
+	return false
 }
 
 // WithRetryIfFunc 覆盖 ekit 默认重试触发条件(幂等方法门 + 5xx +
