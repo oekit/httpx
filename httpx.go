@@ -28,6 +28,7 @@ type Client struct {
 	bearerToken            string
 	basicUser              string
 	basicPass              string
+	headers                map[string]string // WithHeaders/WithHeader 声明的静态自定义头（#128）
 	cookieJar              http.CookieJar
 	endpointManager        *EndpointManager
 	priorityQueue          *PriorityQueue
@@ -123,6 +124,11 @@ func NewClient(service string, opts ...ClientOption) (*Client, error) {
 	// base 中间件最先注册 = 最外层：相对 URI 补 baseURL、补 auth、
 	// cookie jar 注入/回收，使裸 Hertz().Do 与封装方法行为一致
 	c.client.Use(c.baseMiddleware())
+	// 静态头中间件紧随 base（#128）：先补 URI/鉴权，再注入静态头；用户
+	// OnBeforeRequest 闭包在其后（内层）注册 ⇒ 同名键以用户闭包为准（叠加语义）
+	if len(c.headers) > 0 {
+		c.client.Use(c.staticHeaderMiddleware())
+	}
 	if len(c.mw) > 0 {
 		c.client.Use(c.mw...)
 	}

@@ -120,8 +120,8 @@ func TestRetryIfFunc_DefaultStillRetriesIdempotent(t *testing.T) {
 	}
 }
 
-// TestRetryIfFunc_IdempotentGateUnit 单元钉住幂等门判定：幂等方法与
-// 无 body 请求可重试，带 body 的非幂等请求不可。
+// TestRetryIfFunc_IdempotentGateUnit 单元钉住幂等门判定：只按**方法**判定
+// （#129）——幂等方法可重试，POST（无论有无 body）与 PATCH 等一律不可。
 func TestRetryIfFunc_IdempotentGateUnit(t *testing.T) {
 	newReq := func(method string, body []byte) *protocol.Request {
 		req := &protocol.Request{}
@@ -144,7 +144,7 @@ func TestRetryIfFunc_IdempotentGateUnit(t *testing.T) {
 		{http.MethodPut, []byte(`{"a":1}`), true},
 		{http.MethodDelete, nil, true},
 		{http.MethodTrace, nil, true},
-		{http.MethodPost, nil, true},                // 无 body 的 POST 重放无副作用面
+		{http.MethodPost, nil, false},               // #129：无 body 的 POST 同样判非幂等（副作用在方法+路径上）
 		{http.MethodPost, []byte(`{"a":1}`), false}, // 带 body 的 POST：重复下单风险
 		{http.MethodPatch, []byte(`{"a":1}`), false},
 	} {
@@ -153,14 +153,21 @@ func TestRetryIfFunc_IdempotentGateUnit(t *testing.T) {
 		}
 	}
 
-	// 默认谓词整体：幂等 5xx 重试、非幂等带 body 5xx 不重试、错误按方法门
+	// 默认谓词整体：幂等 5xx 重试、POST（含无 body）5xx/网络错误不重试、
+	// 幂等方法错误按方法门放行
 	srvErr := &protocol.Response{}
 	srvErr.SetStatusCode(500)
 	if !defaultRetryIf(newReq(http.MethodGet, nil), srvErr, nil) {
 		t.Error("defaultRetryIf: GET 5xx 应重试")
 	}
+	if defaultRetryIf(newReq(http.MethodPost, nil), srvErr, nil) {
+		t.Error("defaultRetryIf: 无 body 的 POST 5xx 不应重试（#129）")
+	}
 	if defaultRetryIf(newReq(http.MethodPost, []byte(`{}`)), srvErr, nil) {
 		t.Error("defaultRetryIf: 带 body 的 POST 5xx 不应重试")
+	}
+	if defaultRetryIf(newReq(http.MethodPost, nil), nil, errors.New("net")) {
+		t.Error("defaultRetryIf: 无 body 的 POST 网络错误不应重试（后端可能已写入，#129）")
 	}
 	if defaultRetryIf(newReq(http.MethodPost, []byte(`{}`)), nil, errors.New("net")) {
 		t.Error("defaultRetryIf: 带 body 的 POST 网络错误不应重试（后端可能已写入）")
@@ -170,8 +177,42 @@ func TestRetryIfFunc_IdempotentGateUnit(t *testing.T) {
 	}
 }
 
+// TestRetryIfFunc_DefaultDoesNotRetryNoBodyPost 回归（#129）：无 body 的
+// POST 不再被默认谓词重放。
+//
+// 旧的幂等门在方法判定之外留了「len(req.Body()) == 0 即幂等」的兜底——空
+// body 的 POST 恰恰是副作用型接口最常见的形态（POST /pay、POST /orders/{id}/cancel：
+// 副作用在方法+路径上，不在 payload 里）。实测（修复前，同一路径 /pay、
+// maxAttempts=3）：有 body 的 POST 上游被打 1 次，**无 body 的 POST 被打满 3 次**；
+// 网关超时但后端已写入时即重复下单/重复扣款。修复后幂等门只按方法判定，
+// 无 body 的 POST 与有 body 的一样只打 1 次。
+func TestRetryIfFunc_DefaultDoesNotRetryNoBodyPost(t *testing.T) {
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("boom"))
+	}))
+	t.Cleanup(srv.Close)
+
+	cli := MustNewClient("svc",
+		WithBaseURL(srv.URL),
+		WithRetryConfig(3, 10*time.Millisecond, 50*time.Millisecond, 0),
+	)
+
+	var out map[string]any
+	// 与 issue 复现形态逐字对齐：DoJSON + 显式 nil body（非空 map 序列化后
+	// body 非空，走的是另一条已被 #85 钉住的路径）。
+	_ = cli.DoJSON(context.Background(), http.MethodPost, "/pay", nil, &out)
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("无 body 的 POST 被请求了 %d 次，期望 1 次（#129：空 body 不是幂等豁免，副作用在方法+路径上）", got)
+	}
+}
+
 // TestRetryIfFunc_ExplicitPredicateIsUsed 回归护栏：显式谓词真的被用上了
 // （谓词返回 true 时该重试就重试）——防止「显式谓词被忽略」换个方向复发。
+// 该测试同时钉住 #129 的逃生舱：确实需要重放 POST 的调用方经 WithRetryIfFunc
+// 显式声明（复现形态即无 body 的 POST）。
 func TestRetryIfFunc_ExplicitPredicateIsUsed(t *testing.T) {
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
