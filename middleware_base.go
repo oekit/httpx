@@ -65,6 +65,24 @@ func (c *Client) baseMiddleware() client.Middleware {
 	}
 }
 
+// staticHeaderMiddleware 把 WithHeaders/WithHeader 声明的静态自定义头逐请求
+// 注入（#128）：每个 k/v 一律 SetHeader（无条件 Set，覆盖请求上已设的同名值）。
+//
+// 注册位次（NewClient）：紧跟 base 中间件、先于用户 OnBeforeRequest 闭包——
+//   - base 先补 URI 与鉴权头，静态头随后注入 ⇒ 声明了 Authorization 的静态头
+//     覆盖 Bearer/Basic（API-Key 形态鉴权的目标场景，见 WithHeaders 文档）；
+//   - 用户闭包在其后（内层）执行 ⇒ 同名键以闭包为准（静态兜底、动态覆盖）。
+func (c *Client) staticHeaderMiddleware() client.Middleware {
+	return func(next client.Endpoint) client.Endpoint {
+		return func(ctx context.Context, req *protocol.Request, resp *protocol.Response) error {
+			for k, v := range c.headers {
+				req.Header.Set(k, v)
+			}
+			return next(ctx, req, resp)
+		}
+	}
+}
+
 // setCookiesFromResponse 把 Hertz 响应头的 Set-Cookie 解析成标准 Cookie。
 func setCookiesFromResponse(resp *protocol.Response) []*http.Cookie {
 	h := make(http.Header)
