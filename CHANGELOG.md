@@ -1,3 +1,10 @@
+## [v0.9.0] — 2026-11-10
+
+- - feat: WithHeaders/WithHeader 静态头选项——引擎预置请求前置中间件，全请求路径生效，多次调用合并后写者赢（#128）
+- - fix: idempotentForRetry 删除无 body POST 的幂等兜底——非幂等副作用请求不再被自动重放（#129）
+
+关联问题单：httpx#128、httpx#129。
+
 ## [v0.8.16] — 2026-11-08
 
 - fix(bridge): RoundTrip 的「fullURL 是否自带 scheme://host」改解析式判定——path?query 里含字面量 "://"（如 `?to=http://x`）不再被误判为已有 scheme，请求不再丢失 scheme/host 被拨到默认 :80（Authorization 等凭证随错误寻址泄漏的风险面一并关闭）（#106）
