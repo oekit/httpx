@@ -7,7 +7,7 @@ require (
 	github.com/oekit/concurrency v0.33.0
 	github.com/oekit/logx v0.9.2
 	github.com/oekit/metrics v0.2.4
-	github.com/oekit/pkg v0.43.0
+	github.com/oekit/pkg v0.44.0
 	github.com/oekit/registry v0.5.14
 	github.com/oekit/tracing v0.4.0
 	github.com/prometheus/client_golang v1.25.0
@@ -33,7 +33,7 @@ require (
 	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
-	github.com/oekit/core v0.14.1 // indirect
+	github.com/oekit/core v0.14.2 // indirect
 	github.com/prometheus/client_model v0.6.3 // indirect
 	github.com/prometheus/common v0.72.0 // indirect
 	github.com/prometheus/procfs v0.22.0 // indirect
