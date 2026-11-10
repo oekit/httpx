@@ -69,7 +69,7 @@ func TestSafeDialFunc_BlocksBeforeNext(t *testing.T) {
 func TestSafeDialFuncWith_EndpointVerifyCloses(t *testing.T) {
 	called := false
 	closed := false
-	fn := SafeDialFuncWith([]pkgurlguard.Option{pkgurlguard.WithAllowCIDRs("10.0.0.0/8")},
+	fn := SafeDialFuncWith([]pkgurlguard.GuardOption{pkgurlguard.WithAllowCIDRs("10.0.0.0/8")},
 		func(addr string) (network.Conn, error) {
 			called = true
 			return &fakeConn{remote: tcpAddr("127.0.0.1", 9000), closed: &closed}, nil
@@ -90,7 +90,7 @@ func TestSafeDialFuncWith_EndpointVerifyCloses(t *testing.T) {
 // TestSafeDialFuncWith_HappyPath：解析与端点均合规 → next 收到原样 addr。
 func TestSafeDialFuncWith_HappyPath(t *testing.T) {
 	var gotAddr string
-	fn := SafeDialFuncWith([]pkgurlguard.Option{pkgurlguard.WithAllowCIDRs("93.0.0.0/8")},
+	fn := SafeDialFuncWith([]pkgurlguard.GuardOption{pkgurlguard.WithAllowCIDRs("93.0.0.0/8")},
 		func(addr string) (network.Conn, error) {
 			gotAddr = addr
 			return &fakeConn{remote: tcpAddr("93.184.216.34", 443), closed: new(bool)}, nil
@@ -111,7 +111,7 @@ func TestSafeDialFuncWith_HappyPath(t *testing.T) {
 // 内网 webhook 目标在 httpx 拨号层被拒，写面/拨号面结论相反。
 func TestSafeDialFuncWith_AllowDomainsExemption(t *testing.T) {
 	called := false
-	fn := SafeDialFuncWith([]pkgurlguard.Option{pkgurlguard.WithAllowDomains("localhost")},
+	fn := SafeDialFuncWith([]pkgurlguard.GuardOption{pkgurlguard.WithAllowDomains("localhost")},
 		func(addr string) (network.Conn, error) {
 			called = true
 			return &fakeConn{remote: tcpAddr("127.0.0.1", 8080), closed: new(bool)}, nil
@@ -133,7 +133,7 @@ func TestSafeDialFuncWith_AllowDomainsExemption(t *testing.T) {
 func TestSafeDialFuncWith_HostHookInvoked(t *testing.T) {
 	var hookHosts []string
 	nextCalled := false
-	fn := SafeDialFuncWith([]pkgurlguard.Option{
+	fn := SafeDialFuncWith([]pkgurlguard.GuardOption{
 		pkgurlguard.WithAllowDomains("localhost"),
 		pkgurlguard.WithCheckHostFunc(func(h string) error {
 			hookHosts = append(hookHosts, h)
@@ -162,7 +162,7 @@ func TestSafeDialFuncWith_HostHookInvoked(t *testing.T) {
 // （2852039166 = 169.254.169.254 云 metadata）。
 func TestSafeDialFuncWith_ExoticLiteralBlocked(t *testing.T) {
 	for _, host := range []string{"2852039166", "127.1", "0x7f000001"} {
-		fn := SafeDialFuncWith([]pkgurlguard.Option{pkgurlguard.WithAllowPrivate()},
+		fn := SafeDialFuncWith([]pkgurlguard.GuardOption{pkgurlguard.WithAllowPrivate()},
 			func(addr string) (network.Conn, error) {
 				return &fakeConn{remote: tcpAddr("169.254.169.254", 443), closed: new(bool)}, nil
 			})
@@ -178,7 +178,7 @@ func TestSafeDialFuncWith_ExoticLiteralBlocked(t *testing.T) {
 
 // TestSafeDialFuncWith_InvalidCIDRFailFast：构造态 CIDR 文法非法 → 拨号一律报错。
 func TestSafeDialFuncWith_InvalidCIDRFailFast(t *testing.T) {
-	fn := SafeDialFuncWith([]pkgurlguard.Option{pkgurlguard.WithAllowCIDRs("not-a-cidr")}, nil)
+	fn := SafeDialFuncWith([]pkgurlguard.GuardOption{pkgurlguard.WithAllowCIDRs("not-a-cidr")}, nil)
 	if _, err := fn("93.184.216.34:443"); err == nil {
 		t.Fatal("非法配置的拨号函数应一律报错")
 	}
@@ -205,7 +205,7 @@ func TestWithSafeDial_OptionPresent(t *testing.T) {
 // 预算（判定层经 pkg Guard.DialFunc，mock 返回豁免网段内的端点）。
 func TestWithSafeDial_TimeoutPassthrough(t *testing.T) {
 	mock := &recordingDialer{}
-	d := newSafeDialerWithBase([]pkgurlguard.Option{pkgurlguard.WithAllowCIDRs("93.0.0.0/8")}, mock)
+	d := newSafeDialerWithBase([]pkgurlguard.GuardOption{pkgurlguard.WithAllowCIDRs("93.0.0.0/8")}, mock)
 	conn, err := d.DialConnection("tcp", "93.184.216.34:443", 2*time.Second, nil)
 	if err != nil {
 		t.Fatalf("豁免网段内目标应放行，got %v", err)
