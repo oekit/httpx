@@ -54,7 +54,7 @@ func TestRoundTripper_HTTPSWithSafeDial(t *testing.T) {
 
 	client := StdClient("bridge-https",
 		WithBaseURL(srv.URL),
-		WithDialFunc(countingDialFunc(&dials, SafeDialFuncWith([]pkgurlguard.Option{pkgurlguard.WithAllowPrivate()}, passThroughDial))),
+		WithDialFunc(countingDialFunc(&dials, SafeDialFuncWith([]pkgurlguard.GuardOption{pkgurlguard.WithAllowPrivate()}, passThroughDial))),
 		WithTLSSkipVerify(), // 自签证书；同时验证 TLS 选项不再丢拨号器（(b) 回归）
 	)
 	defer closeBridge(t, client)

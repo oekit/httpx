@@ -1,3 +1,7 @@
+## [v0.10.0] — 2026-11-11
+
+- **BREAKING** refactor(ssrf): 跟随 pkg#355 禁裸 Option 改名——公开 API 的 `pkgurlguard.Option` 引用改为 `pkgurlguard.GuardOption`（SafeDialFuncWith / WithSafeDial 签名），地板同步抬至 pkg v0.43.0。仅**显式命名该类型**的调用方需机械改名（`WithSafeDial(pkgurlguard.WithAllowPrivate())` 这类不命名类型的调用不受影响）；改名动机是多包 co-import 冲突（pkg 仓规「函数选项模式 XxxOption」），全矩阵同批收口。
+
 ## [v0.9.4] — 2026-11-11
 
 - fix(dialer): tlsAwareDialer 保留 hertz 层拨号预算——WithTimeout/WithDialTimeout 在自定义拨号器（含 WithSafeDial）形态下真实生效（#151）。修复前 tlsAwareDialer.DialConnection 接住 hertz 传入的 timeout 却只用于拨号后的 TLS 握手，拨号动作本身无从约束；WithSafeDial 自带拨号器更是硬编 30s——黑洞目标下单请求占住连接与 goroutine 30s（调用方声明 1s/2s），显式补 WithHertzOption(client.WithDialTimeout(d)) 的逃生舱同样被丢弃。修法：WithSafeDial 装配面收编为带预算通道的内部形态（guarded），hertz 传入的 timeout 经 ctx deadline 单通道透传——pkg 判定（含 DNS 解析）与底层 standard 拨号器都在预算内，TLS 握手只占剩余预算（「拨号上限不倒挂」承诺在自定义拨号器形态下重新成立，#92）；裸 network.DialFunc 形态（WithDialFunc 直配）签名装不下预算，自带拨号器以 defaultDialBudget（30s）兜底并在文档写明边界。现代特性：min（握手剩余预算钳制，时钟抖动下不反超声明上限）、errors.Is（回归测试的钩子拒绝哨兵在拨号错误链上可识别）

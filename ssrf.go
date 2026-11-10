@@ -50,16 +50,16 @@ func SafeDialFunc(next network.DialFunc) network.DialFunc {
 	return SafeDialFuncWith(nil, next)
 }
 
-// SafeDialFuncWith 同 SafeDialFunc，但接受 pkg/urlguard 的构造态 Option：
+// SafeDialFuncWith 同 SafeDialFunc，但接受 pkg/urlguard 的构造态 GuardOption：
 //
-//	httpx.SafeDialFuncWith([]urlguard.Option{urlguard.WithAllowPrivate()}, next) // 测试打本机 mock
-//	httpx.SafeDialFuncWith([]urlguard.Option{urlguard.WithAllowCIDRs("10.20.0.0/16")}, next) // 内网端点豁免
+//	httpx.SafeDialFuncWith([]urlguard.GuardOption{urlguard.WithAllowPrivate()}, next) // 测试打本机 mock
+//	httpx.SafeDialFuncWith([]urlguard.GuardOption{urlguard.WithAllowCIDRs("10.20.0.0/16")}, next) // 内网端点豁免
 //
 // CIDR 文法非法时返回的拨号函数一律报错（fail-fast，不带病运行）。
 //
 // 判定规则单源在 pkg/urlguard（#150）：next（含 nil 时的自带拨号器）被适配成
 // Guard.DialFunc 的 net 形态后交 pkg 包装，httpx 不再手写判定面。
-func SafeDialFuncWith(opts []pkgurlguard.Option, next network.DialFunc) network.DialFunc {
+func SafeDialFuncWith(opts []pkgurlguard.GuardOption, next network.DialFunc) network.DialFunc {
 	g, err := pkgurlguard.New(opts...)
 	guarded := newGuardedDial(g, err, next, standard.NewDialer())
 	return func(addr string) (network.Conn, error) {
@@ -72,11 +72,11 @@ func SafeDialFuncWith(opts []pkgurlguard.Option, next network.DialFunc) network.
 // client.WithDialTimeout）经 DialConnection 的 timeout 参数全程透传到底层
 // 拨号器（#151——WithTimeout 的拨号预算在本形态下真实生效）。URL 层字面量
 // 校验请另调 pkg/urlguard 的 IsBlockedURL / Guard.CheckURL。无参调用即缺省
-// 全阻断；豁免传 pkg/urlguard 的 Option（可变参，向后兼容无参形态）。
+// 全阻断；豁免传 pkg/urlguard 的 GuardOption（可变参，向后兼容无参形态）。
 //
 // https 目标受支持（#74）：拨通后按 tlsConfig 补握手——防护在 TLS 之前生效
 // （先校验再建连），握手只占拨号预算的剩余部分（拨号上限不倒挂，#92）。
-func WithSafeDial(opts ...pkgurlguard.Option) ClientOption {
+func WithSafeDial(opts ...pkgurlguard.GuardOption) ClientOption {
 	return func(c *Client) {
 		c.dialer = newSafeDialer(opts)
 	}
@@ -85,14 +85,14 @@ func WithSafeDial(opts ...pkgurlguard.Option) ClientOption {
 // newSafeDialer 装配 WithSafeDial 的拨号器。构造态 option 非法时拨号一律
 // fail-fast（ClientOption 形态无法在装配期返回 error，与 SafeDialFuncWith
 // 同口径）。
-func newSafeDialer(opts []pkgurlguard.Option) *tlsAwareDialer {
+func newSafeDialer(opts []pkgurlguard.GuardOption) *tlsAwareDialer {
 	return newSafeDialerWithBase(opts, standard.NewDialer())
 }
 
 // newSafeDialerWithBase 供测试注入底层拨号器（mock 断言预算透传，#151）。
 // 底层拨号器固定 standard 族而非 DefaultDialer：netpoll 构建下 netpoll 连接
 // 不支持 deadline，TLS 无法包装（#74）。
-func newSafeDialerWithBase(opts []pkgurlguard.Option, base network.Dialer) *tlsAwareDialer {
+func newSafeDialerWithBase(opts []pkgurlguard.GuardOption, base network.Dialer) *tlsAwareDialer {
 	g, err := pkgurlguard.New(opts...)
 	d := &tlsAwareDialer{
 		Dialer:    hzdialer.DefaultDialer(),
