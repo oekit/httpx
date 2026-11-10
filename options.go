@@ -57,6 +57,9 @@ func WithBaseURL(u string) ClientOption {
 //     WithHertzOption(client.WithWriteTimeout(d)) 补充）；
 //   - 仅想调读超时、保留 30s 拨号上限：WithHertzOption(client.WithClientReadTimeout(d))；
 //   - 仅想调拨号：WithHertzOption(client.WithDialTimeout(d))；
+//   - 拨号预算在自定义拨号器形态下的边界（#151）：WithSafeDial 全程透传（拨号
+//     阶段真实受控）；WithDialFunc 注入的自定义 DialFunc 签名（func(addr)）
+//     装不下预算，建连预算由拨号器自身决定；
 //   - 流式响应（SSE/代理长连接/WS 升级）不能用整段读超时掐流，用 WithStream。
 func WithTimeout(d time.Duration) ClientOption {
 	return func(c *Client) {
@@ -175,6 +178,10 @@ func WithTLSSkipVerify() ClientOption {
 // 之后时自定义拨号函数会被静默丢弃（SSRF 防护一并失效）。末位 append 保证
 // WithDialFunc/WithSafeDial 的装配面赢。逃生舱 WithHertzOption 自带
 // client.WithDialer 的例外：本选项未使用时不装配、不覆盖逃生舱的拨号器。
+//
+// #151：fn 的签名（func(addr)）装不下拨号预算——hertz 传入的 timeout 仅约束
+// 拨号后的 TLS 握手段，建连预算由 fn 自身决定；需要 WithTimeout/WithDialTimeout
+// 的拨号预算透传（判定层收编 + 预算通道）用 WithSafeDial。
 func WithDialFunc(fn network.DialFunc, dialers ...network.Dialer) ClientOption {
 	return func(c *Client) {
 		base := dialer.DefaultDialer()

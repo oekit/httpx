@@ -1,3 +1,10 @@
+## [v0.9.4] — 2026-11-11
+
+- fix(dialer): tlsAwareDialer 保留 hertz 层拨号预算——WithTimeout/WithDialTimeout 在自定义拨号器（含 WithSafeDial）形态下真实生效（#151）。修复前 tlsAwareDialer.DialConnection 接住 hertz 传入的 timeout 却只用于拨号后的 TLS 握手，拨号动作本身无从约束；WithSafeDial 自带拨号器更是硬编 30s——黑洞目标下单请求占住连接与 goroutine 30s（调用方声明 1s/2s），显式补 WithHertzOption(client.WithDialTimeout(d)) 的逃生舱同样被丢弃。修法：WithSafeDial 装配面收编为带预算通道的内部形态（guarded），hertz 传入的 timeout 经 ctx deadline 单通道透传——pkg 判定（含 DNS 解析）与底层 standard 拨号器都在预算内，TLS 握手只占剩余预算（「拨号上限不倒挂」承诺在自定义拨号器形态下重新成立，#92）；裸 network.DialFunc 形态（WithDialFunc 直配）签名装不下预算，自带拨号器以 defaultDialBudget（30s）兜底并在文档写明边界。现代特性：min（握手剩余预算钳制，时钟抖动下不反超声明上限）、errors.Is（回归测试的钩子拒绝哨兵在拨号错误链上可识别）
+- fix(ssrf): guardHertzDial 判定层收编为 pkg/urlguard Guard.DialFunc 直接装配，删掉手写漂移面（#150）。修复前 httpx 手写重写 pkg 判定层且比 pkg 少三道闸：① allowDomains 豁免失效——预检走无 host 上下文的 CheckIP，写面放行的内网 webhook 目标在拨号层被拒（pkg#296 修复未跟上，写面/拨号面结论相反）；② 消费方注入的自定义 host 钩子（WithCheckHostFunc）在拨号层从不触发（pkg#91 契约落空，SSRF 防护最强一档静默失效）；③ exotic IPv4 字面量闸门缺失——字面量直接推给系统解析器，WithAllowPrivate 下 2852039166→169.254.169.254（云 metadata）穿透到拨号（pkg#236 闸门未跟上）。修法：next 适配成 Guard.DialFunc 的 net 形态交 pkg 包装，host 字面量判定、exotic 闸门、allowDomains 豁免、自定义钩子、IP 预检与端点复核全部单源在 pkg，httpx 只保留形态适配（hertz network.Conn ↔ net.Conn、拨号预算通道 #151、TLS 补握手 #74）——pkg 侧后续修复随版本升级自动到达。回归测试钉住三处豁免/钩子/闸门行为与预算透传（修复前失败、修复后通过）
+
+关联问题单：httpx#150、httpx#151。
+
 ## [v0.9.3] — 2026-11-10
 
 - - build: 依赖地板对齐（floor sync，无代码变更）
