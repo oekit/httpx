@@ -8,7 +8,7 @@ require (
 	github.com/oekit/logx v0.9.2
 	github.com/oekit/metrics v0.2.3
 	github.com/oekit/pkg v0.42.0
-	github.com/oekit/registry v0.5.12
+	github.com/oekit/registry v0.5.13
 	github.com/oekit/tracing v0.3.10
 	github.com/prometheus/client_golang v1.25.0
 	github.com/sony/gobreaker v1.0.0
