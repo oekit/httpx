@@ -112,13 +112,6 @@ func TestWithBearerToken(t *testing.T) {
 	}
 }
 
-func TestWithDebug(t *testing.T) {
-	c := MustNewClient("test", WithDebug())
-	if c.client == nil {
-		t.Error("expected non-nil client")
-	}
-}
-
 func TestWithCircuitBreaker(t *testing.T) {
 	c := MustNewClient("test", WithCircuitBreaker("cb-test", gobreaker.Settings{
 		Interval: 10 * time.Second,
@@ -280,7 +273,6 @@ func TestNewClient_ComposedOptions(t *testing.T) {
 		WithBaseURL("http://example.com"),
 		WithTimeout(10*time.Second),
 		WithBearerToken("token"),
-		WithDebug(),
 		WithMetrics(nil, "ns"),
 	)
 	if c == nil {
