@@ -32,6 +32,111 @@ func (c *Client) DoJSON(ctx context.Context, method, path string, body any, out 
 	return c.DoCodec(ctx, codec.DefaultName, method, path, body, out)
 }
 
+// guardPriority 获取分级准入许可（请求骨架第一环，#159 收敛单源）。
+// 队列满且 ctx 取消/超时时返回错误（文案与各入口历史实现逐字节一致）；
+// 成功时调用方必须 defer c.releasePriority(priority)。
+func (c *Client) guardPriority(ctx context.Context) (Priority, error) {
+	if c.priorityQueue == nil {
+		return PriorityNormal, nil
+	}
+	priority := GetPriority(ctx)
+	if !c.priorityQueue.Acquire(ctx, priority) {
+		return PriorityNormal, fmt.Errorf("%s: request cancelled due to priority queue", c.service)
+	}
+	return priority, nil
+}
+
+// releasePriority 释放 guardPriority 获取的许可（未配置队列时空操作）。
+func (c *Client) releasePriority(priority Priority) {
+	if c.priorityQueue != nil {
+		c.priorityQueue.Release(priority)
+	}
+}
+
+// doWithLBDone 执行传输层 Do 并回写负载均衡结果（#159/#162 收敛单源）：
+// DoneInfo 以传输层最终错误回写（成功为 nil，Err 非 nil 即 P2C 摘除信号）；
+// 传输层失败按 failVerb 包装——"request failed"/"upload failed" 各入口
+// 历史文案保持不变。
+func (c *Client) doWithLBDone(ctx context.Context, req *protocol.Request, resp *protocol.Response, lbDone loadbalance.DoneFunc, failVerb string) error {
+	err := c.client.Do(ctx, req, resp)
+	if lbDone != nil {
+		lbDone(ctx, loadbalance.DoneInfo{Err: err})
+	}
+	if err != nil {
+		return fmt.Errorf("%s: %s: %w", c.service, failVerb, err)
+	}
+	return nil
+}
+
+// exec 是 DoCodec/DoRaw/DoDetail/UploadFile/UploadBytes 五个封装方法共用
+// 的请求执行骨架（#159 收敛单源）：分级准入守卫 → 寻址 → 协议对象获取/
+// 释放 → 鉴权 → 请求体装载 → 传输（lbDone 回写）→ 响应处理。五个方法
+// 收敛为薄封装，错误文案与外部行为保持历史逐字节等价
+// （等价性回归基线见 exec_skeleton_test.go）。
+//
+// 参数约定：
+//   - action：ServiceError.Action 文案（"GET /path" / "UPLOAD /path"）；
+//   - failVerb：传输层失败的错误动词（"request failed"/"upload failed"）；
+//   - buildBody：在准入守卫通过之后构建请求体（返回 data 与 Content-Type），
+//     nil 或返回 (nil, "", nil) 表示不装载 body；错误即短路返回、不触网；
+//   - out/cd 透传 handleResponse；两者均为 nil 时（DoRaw/DoDetail 形态）
+//     返回值携带状态码与原始响应体——错误路径也带（DoDetail 语义），
+//     DoRaw 在薄封装层按历史语义丢弃。
+func (c *Client) exec(ctx context.Context, method, path, action, failVerb string, buildBody func() (data []byte, contentType string, err error), out any, cd codec.Codec) (int, []byte, error) {
+	priority, err := c.guardPriority(ctx)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer c.releasePriority(priority)
+
+	fullURL, lbDone := c.resolveEndpoint(ctx, path)
+
+	req, resp := protocol.AcquireRequest(), protocol.AcquireResponse()
+	defer protocol.ReleaseRequest(req)
+	defer protocol.ReleaseResponse(resp)
+
+	req.SetMethod(method)
+	req.SetRequestURI(fullURL)
+	c.applyAuth(req)
+
+	if buildBody != nil {
+		data, contentType, berr := buildBody()
+		if berr != nil {
+			return 0, nil, berr
+		}
+		if data != nil || contentType != "" {
+			req.SetBody(data)
+			req.Header.SetContentTypeBytes([]byte(contentType))
+		}
+	}
+
+	if err := c.doWithLBDone(ctx, req, resp, lbDone, failVerb); err != nil {
+		return 0, nil, err
+	}
+
+	status := resp.StatusCode()
+	var raw []byte
+	if out == nil && cd == nil {
+		raw = append([]byte(nil), resp.Body()...)
+	}
+	return status, raw, c.handleResponse(resp, action, out, cd)
+}
+
+// marshalJSONBody 构建 DoRaw/DoDetail 共用的 JSON 请求体装载器（body 为
+// nil 时返回无 body 形态）。错误文案 "marshal body" 保持历史不变。
+func marshalJSONBody(c *Client, body any) func() ([]byte, string, error) {
+	return func() ([]byte, string, error) {
+		if body == nil {
+			return nil, "", nil
+		}
+		data, err := json.Marshal(body)
+		if err != nil {
+			return nil, "", fmt.Errorf("%s: marshal body: %w", c.service, err)
+		}
+		return data, "application/json", nil
+	}
+}
+
 // DoCodec 使用指定编解码器发送请求：body 经 codec.Marshal 序列化并设置
 // 对应 Content-Type；响应按其 Content-Type 反查 codec 反序列化到 out
 // （查不到回退请求 codec）。codecName 未注册时返回 error 而非 panic（#114，
@@ -42,84 +147,30 @@ func (c *Client) DoCodec(ctx context.Context, codecName, method, path string, bo
 	if cd == nil {
 		return fmt.Errorf("%s: unknown codec %q", c.service, codecName)
 	}
-
-	priority := GetPriority(ctx)
-	if c.priorityQueue != nil {
-		if !c.priorityQueue.Acquire(ctx, priority) {
-			return fmt.Errorf("%s: request cancelled due to priority queue", c.service)
-		}
-		defer c.priorityQueue.Release(priority)
-	}
-
-	fullURL, lbDone := c.resolveEndpoint(ctx, path)
-
-	req, resp := protocol.AcquireRequest(), protocol.AcquireResponse()
-	defer protocol.ReleaseRequest(req)
-	defer protocol.ReleaseResponse(resp)
-
-	req.SetMethod(method)
-	req.SetRequestURI(fullURL)
-	c.applyAuth(req)
-
-	if body != nil {
-		data, err := cd.Marshal(body)
-		if err != nil {
-			return fmt.Errorf("%s: marshal body: %w", c.service, err)
-		}
-		req.SetBody(data)
-		req.Header.SetContentTypeBytes([]byte(cd.ContentType()))
-	}
-
-	err := c.client.Do(ctx, req, resp)
-	if lbDone != nil {
-		lbDone(ctx, loadbalance.DoneInfo{Err: err})
-	}
-	if err != nil {
-		return fmt.Errorf("%s: request failed: %w", c.service, err)
-	}
-	return c.handleResponse(resp, method+" "+path, out, cd)
+	_, _, err := c.exec(ctx, method, path, method+" "+path, "request failed",
+		func() ([]byte, string, error) {
+			if body == nil {
+				return nil, "", nil
+			}
+			data, err := cd.Marshal(body)
+			if err != nil {
+				return nil, "", fmt.Errorf("%s: marshal body: %w", c.service, err)
+			}
+			return data, cd.ContentType(), nil
+		}, out, cd)
+	return err
 }
 
 // DoRaw 使用指定的 HTTP 方法发送 JSON 请求，返回原始响应字节数据。
+// 与 DoDetail 的语义差异（等价性基线钉住，不得合并）：非 2xx 时返回
+// nil body + *ServiceError，仅成功时返回 body。
 func (c *Client) DoRaw(ctx context.Context, method, path string, body any) ([]byte, error) {
-	priority := GetPriority(ctx)
-	if c.priorityQueue != nil {
-		if !c.priorityQueue.Acquire(ctx, priority) {
-			return nil, fmt.Errorf("%s: request cancelled due to priority queue", c.service)
-		}
-		defer c.priorityQueue.Release(priority)
-	}
-
-	fullURL, lbDone := c.resolveEndpoint(ctx, path)
-
-	req, resp := protocol.AcquireRequest(), protocol.AcquireResponse()
-	defer protocol.ReleaseRequest(req)
-	defer protocol.ReleaseResponse(resp)
-
-	req.SetMethod(method)
-	req.SetRequestURI(fullURL)
-	c.applyAuth(req)
-
-	if body != nil {
-		data, err := json.Marshal(body)
-		if err != nil {
-			return nil, fmt.Errorf("%s: marshal body: %w", c.service, err)
-		}
-		req.SetBody(data)
-		req.Header.SetContentTypeBytes([]byte("application/json"))
-	}
-
-	err := c.client.Do(ctx, req, resp)
-	if lbDone != nil {
-		lbDone(ctx, loadbalance.DoneInfo{Err: err})
-	}
+	_, raw, err := c.exec(ctx, method, path, method+" "+path, "request failed",
+		marshalJSONBody(c, body), nil, nil)
 	if err != nil {
-		return nil, fmt.Errorf("%s: request failed: %w", c.service, err)
-	}
-	if err := c.handleResponse(resp, method+" "+path, nil, nil); err != nil {
 		return nil, err
 	}
-	return append([]byte(nil), resp.Body()...), nil
+	return raw, nil
 }
 
 // DoDetail 使用指定的 HTTP 方法发送请求，返回状态码与原始响应体。
@@ -128,46 +179,8 @@ func (c *Client) DoRaw(ctx context.Context, method, path string, body any) ([]by
 // *ServiceError，调用方可自行判定如何处理响应内容。
 // 传输层失败时 status 为 0、body 为 nil。
 func (c *Client) DoDetail(ctx context.Context, method, path string, body any) (int, []byte, error) {
-	priority := GetPriority(ctx)
-	if c.priorityQueue != nil {
-		if !c.priorityQueue.Acquire(ctx, priority) {
-			return 0, nil, fmt.Errorf("%s: request cancelled due to priority queue", c.service)
-		}
-		defer c.priorityQueue.Release(priority)
-	}
-
-	fullURL, lbDone := c.resolveEndpoint(ctx, path)
-
-	req, resp := protocol.AcquireRequest(), protocol.AcquireResponse()
-	defer protocol.ReleaseRequest(req)
-	defer protocol.ReleaseResponse(resp)
-
-	req.SetMethod(method)
-	req.SetRequestURI(fullURL)
-	c.applyAuth(req)
-
-	if body != nil {
-		data, err := json.Marshal(body)
-		if err != nil {
-			return 0, nil, fmt.Errorf("%s: marshal body: %w", c.service, err)
-		}
-		req.SetBody(data)
-		req.Header.SetContentTypeBytes([]byte("application/json"))
-	}
-
-	err := c.client.Do(ctx, req, resp)
-	if lbDone != nil {
-		lbDone(ctx, loadbalance.DoneInfo{Err: err})
-	}
-	if err != nil {
-		return 0, nil, fmt.Errorf("%s: request failed: %w", c.service, err)
-	}
-	status := resp.StatusCode()
-	raw := append([]byte(nil), resp.Body()...)
-	if err := c.handleResponse(resp, method+" "+path, nil, nil); err != nil {
-		return status, raw, err
-	}
-	return status, raw, nil
+	return c.exec(ctx, method, path, method+" "+path, "request failed",
+		marshalJSONBody(c, body), nil, nil)
 }
 
 // UploadFile 上传本地文件 (multipart/form-data)：读取 filePath 全部内容
@@ -175,83 +188,35 @@ func (c *Client) DoDetail(ctx context.Context, method, path string, body any) (i
 // 避免泄漏服务器目录结构），额外表单字段经 extraFields 透传（#86，重报 #102）。
 // 内存中的字节用 UploadBytes。
 func (c *Client) UploadFile(ctx context.Context, path, filePath, fieldName string, extraFields map[string]string, out any) error {
-	priority := GetPriority(ctx)
-	if c.priorityQueue != nil {
-		if !c.priorityQueue.Acquire(ctx, priority) {
-			return fmt.Errorf("%s: request cancelled due to priority queue", c.service)
-		}
-		defer c.priorityQueue.Release(priority)
-	}
-
-	// 修复前（#86，重报 #102）本方法把 filePath 直接当 filename 传给 multipart 构造
-	// 且 data 恒为 nil——上传请求成功发出但文件 part 内容恒为空（空文件），
-	// 且 part filename 是完整本地路径（泄漏服务器目录结构）。
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return fmt.Errorf("%s: read upload file: %w", c.service, err)
-	}
-	fileName := filepath.Base(filePath)
-
-	fullURL, lbDone := c.resolveEndpoint(ctx, path)
-	body, contentType, err := buildMultipartFileBytes(fieldName, fileName, data, extraFields)
-	if err != nil {
-		return fmt.Errorf("%s: build multipart: %w", c.service, err)
-	}
-
-	req, resp := protocol.AcquireRequest(), protocol.AcquireResponse()
-	defer protocol.ReleaseRequest(req)
-	defer protocol.ReleaseResponse(resp)
-
-	req.SetMethod(http.MethodPost)
-	req.SetRequestURI(fullURL)
-	c.applyAuth(req)
-	req.SetBody(body)
-	req.Header.SetContentTypeBytes([]byte(contentType))
-
-	err = c.client.Do(ctx, req, resp)
-	if lbDone != nil {
-		lbDone(ctx, loadbalance.DoneInfo{Err: err})
-	}
-	if err != nil {
-		return fmt.Errorf("%s: upload failed: %w", c.service, err)
-	}
-	return c.handleResponse(resp, "UPLOAD "+path, out, nil)
+	_, _, err := c.exec(ctx, http.MethodPost, path, "UPLOAD "+path, "upload failed",
+		func() ([]byte, string, error) {
+			// 修复前（#86，重报 #102）本方法把 filePath 直接当 filename 传给 multipart 构造
+			// 且 data 恒为 nil——上传请求成功发出但文件 part 内容恒为空（空文件），
+			// 且 part filename 是完整本地路径（泄漏服务器目录结构）。
+			data, err := os.ReadFile(filePath)
+			if err != nil {
+				return nil, "", fmt.Errorf("%s: read upload file: %w", c.service, err)
+			}
+			body, contentType, err := buildMultipartFileBytes(fieldName, filepath.Base(filePath), data, extraFields)
+			if err != nil {
+				return nil, "", fmt.Errorf("%s: build multipart: %w", c.service, err)
+			}
+			return body, contentType, nil
+		}, out, nil)
+	return err
 }
 
 // UploadBytes 上传字节数据 (multipart/form-data)。
 func (c *Client) UploadBytes(ctx context.Context, path string, data []byte, fieldName, fileName string, extraFields map[string]string, out any) error {
-	priority := GetPriority(ctx)
-	if c.priorityQueue != nil {
-		if !c.priorityQueue.Acquire(ctx, priority) {
-			return fmt.Errorf("%s: request cancelled due to priority queue", c.service)
-		}
-		defer c.priorityQueue.Release(priority)
-	}
-
-	fullURL, lbDone := c.resolveEndpoint(ctx, path)
-	body, contentType, err := buildMultipartFileBytes(fieldName, fileName, data, extraFields)
-	if err != nil {
-		return fmt.Errorf("%s: build multipart: %w", c.service, err)
-	}
-
-	req, resp := protocol.AcquireRequest(), protocol.AcquireResponse()
-	defer protocol.ReleaseRequest(req)
-	defer protocol.ReleaseResponse(resp)
-
-	req.SetMethod(http.MethodPost)
-	req.SetRequestURI(fullURL)
-	c.applyAuth(req)
-	req.SetBody(body)
-	req.Header.SetContentTypeBytes([]byte(contentType))
-
-	err = c.client.Do(ctx, req, resp)
-	if lbDone != nil {
-		lbDone(ctx, loadbalance.DoneInfo{Err: err})
-	}
-	if err != nil {
-		return fmt.Errorf("%s: upload failed: %w", c.service, err)
-	}
-	return c.handleResponse(resp, "UPLOAD "+path, out, nil)
+	_, _, err := c.exec(ctx, http.MethodPost, path, "UPLOAD "+path, "upload failed",
+		func() ([]byte, string, error) {
+			body, contentType, err := buildMultipartFileBytes(fieldName, fileName, data, extraFields)
+			if err != nil {
+				return nil, "", fmt.Errorf("%s: build multipart: %w", c.service, err)
+			}
+			return body, contentType, nil
+		}, out, nil)
+	return err
 }
 
 func (c *Client) applyAuth(req *protocol.Request) {
