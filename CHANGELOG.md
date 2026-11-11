@@ -1,3 +1,13 @@
+## [v0.11.0] — 2026-11-12
+
+- - **BREAKING** refactor(options): 删除无实现占位选项 `WithDebug()`（#161）——静默吞配置的误导面（调用方以为开了调试实际什么都没发生）；调试开关统一走 LOG_LEVEL 环境变量（全矩阵口径），挂在 Client 级选项上要么全局改 hlog level（越权副作用）要么继续撒谎。0.x minor 允许 BREAKING，org 内无调用点（已 grep 核对），传 WithDebug() 将编译期暴露
+- fix(resolver): nil NNSClient 构造期 fail-fast（#163）——WithNNS("svc", nil) 经 setConstructErr 使 NewClient 显式返回 error（#83/#89 构造期冲突同口径）；NewNNSResolver("svc", nil) 直接构造路径构造期 panic（对齐 hertz/nns NewRegistry 的 requires non-nil client 口径）。修复前 nil 客户端放行到首个刷新 tick 的 GetInstances panic 后，async.GoSafe 只 recover 不重启，后台刷新循环永久死亡，节点恒空、全部请求静默回落 baseURL，故障完全不可见；回归测试 resolver_nil_client_test.go 钉住 panic 文案、NewClient error 与组合 option 资源回收
+- refactor(request): 请求执行骨架收敛单源（#159/#162）——guardPriority/releasePriority（分级准入守卫+释放）、doWithLBDone（传输层 Do + lbDone 最终错误回写 + failVerb 包装）、exec（守卫→寻址→协议对象→鉴权→buildBody→传输→handleResponse 全骨架）三个单源收编 request.go 五个封装方法（DoCodec/DoRaw/DoDetail/UploadFile/UploadBytes）与 roundtripper.go RoundTrip 的 6 处重复（五方法各约 25 行、RoundTrip 手抄 priority/Do/lbDone/wrap）；外部行为逐字节等价——等价性基线 exec_skeleton_test.go 先在重构前 main 跑绿护航（守卫先于读文件/marshal、错误文案逐字节、错误路径许可不泄漏、DoRaw 非 2xx 返回 nil body 的历史语义保留未并成 DoDetail 别名、lbDone 回写时点不变）
+- build(metrics): 注册复用改引 metrics.RegisterReuse 单源（metrics#100，WithReuseOwner("httpx")），删本地 mustRegisterReuse——同名异型 panic 文案与历史逐字节一致，metrics_type_test.go 原样通过
+- build(deps): 依赖地板对齐——metrics v0.2.4→v0.3.0（RegisterReuse 消费前提）、logx v0.9.2→v0.10.0、pkg v0.44.0→v0.45.0、registry v0.5.14→v0.5.15（依赖仓已发新 tag，发版前抬地板）
+
+关联问题单：httpx#159、httpx#161、httpx#162、httpx#163。
+
 ## [v0.10.0] — 2026-11-11
 
 - **BREAKING** refactor(ssrf): 跟随 pkg#355 禁裸 Option 改名——公开 API 的 `pkgurlguard.Option` 引用改为 `pkgurlguard.GuardOption`（SafeDialFuncWith / WithSafeDial 签名），地板同步抬至 pkg v0.43.0。仅**显式命名该类型**的调用方需机械改名（`WithSafeDial(pkgurlguard.WithAllowPrivate())` 这类不命名类型的调用不受影响）；改名动机是多包 co-import 冲突（pkg 仓规「函数选项模式 XxxOption」），全矩阵同批收口。
