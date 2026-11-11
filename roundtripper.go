@@ -9,8 +9,6 @@ import (
 	"strings"
 
 	"github.com/cloudwego/hertz/pkg/protocol"
-
-	"github.com/oekit/httpx/loadbalance"
 )
 
 // net/http 桥接层（#8）：把 httpx 的熔断/重试/指标/链路透传装进标准库
@@ -77,17 +75,20 @@ func (rt *roundTripper) Close() {
 }
 
 // RoundTrip 实现 http.RoundTripper。
+//
+// 与 request.go 五个封装方法共享的骨架片段（priority 守卫 / Do+lbDone 回写 /
+// 错误包装）经 guardPriority/doWithLBDone 收敛单源（#159/#162）；本方法
+// 保留桥接层特有的段落：请求体全量缓冲、标准库凭证优先（#43）、
+// hop-by-hop 头过滤与 scheme://host 补全（#106）、非 2xx 非错误语义。
 func (rt *roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	c := rt.c
 	ctx := req.Context()
 
-	priority := GetPriority(ctx)
-	if c.priorityQueue != nil {
-		if !c.priorityQueue.Acquire(ctx, priority) {
-			return nil, fmt.Errorf("%s: request cancelled due to priority queue", c.service)
-		}
-		defer c.priorityQueue.Release(priority)
+	priority, err := c.guardPriority(ctx)
+	if err != nil {
+		return nil, err
 	}
+	defer c.releasePriority(priority)
 
 	// 请求体全量缓冲（重试回放前提）
 	var body []byte
@@ -153,12 +154,8 @@ func (rt *roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 
 	// 熔断/重试/指标/链路透传全部经 Client 中间件链生效
-	err := c.client.Do(ctx, hreq, hresp)
-	if lbDone != nil {
-		lbDone(ctx, loadbalance.DoneInfo{Err: err})
-	}
-	if err != nil {
-		return nil, fmt.Errorf("%s: request failed: %w", c.service, err)
+	if err := c.doWithLBDone(ctx, hreq, hresp, lbDone, "request failed"); err != nil {
+		return nil, err
 	}
 
 	// 非 2xx 不是错误（标准库语义），handleResponse 的 ServiceError 转换不适用

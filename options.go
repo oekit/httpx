@@ -202,12 +202,6 @@ func WithHertzOption(opts ...config.ClientOption) ClientOption {
 	}
 }
 
-// WithDebug 开启调试日志。
-// Hertz client 不支持运行时调试开关（日志由 hlog 全局控制），此选项留作占位。
-func WithDebug() ClientOption {
-	return func(_ *Client) {}
-}
-
 // WithTracePropagation 启用 OpenTelemetry 上下文透传(traceparent / tracestate / baggage),
 // 走 Hertz client.UseAsLast 注入,在所有自定义中间件之后执行,
 //
@@ -475,8 +469,18 @@ func WithEndpoints(endpoints ...string) ClientOption {
 }
 
 // WithNNS 启用 NNS 服务发现。
+//
+// nnsClient 为 nil 是构造期非法值（#163）：经 setConstructErr 使 NewClient
+// 显式返回 error（与 #83/#89 的构造期冲突同口径），不再静默装上一个
+// 「首个刷新 tick 即 panic、后台刷新循环永久死亡」的空转 resolver。
+// 直接调用 NewNNSResolver 的场景由其自身的构造期 panic 兜底。
 func WithNNS(serviceName string, nnsClient NNSClient) ClientOption {
 	return func(c *Client) {
+		if nnsClient == nil {
+			c.setConstructErr(errors.New(
+				"httpx: WithNNS: nnsClient 为 nil——动态服务发现没有可用客户端，首个刷新即失败且刷新循环会静默死亡；请传入非 nil 的 NNSClient"))
+			return
+		}
 		c.setDynamicResolver(NewNNSResolver(serviceName, nnsClient))
 	}
 }

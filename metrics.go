@@ -1,11 +1,10 @@
 package httpx
 
 import (
-	"errors"
-	"fmt"
 	"strconv"
 	"time"
 
+	"github.com/oekit/metrics"
 	"github.com/oekit/metrics/resilience"
 	prom "github.com/prometheus/client_golang/prometheus"
 )
@@ -43,52 +42,31 @@ func newClientMetrics(reg prom.Registerer, namespace string) *clientMetrics {
 	}
 
 	m := &clientMetrics{}
-	m.requestsTotal = mustRegisterReuse(reg, prom.NewCounterVec(prom.CounterOpts{
+	// 注册复用经 metrics.RegisterReuse 单源（metrics#100 收编本仓本地实现）：
+	// 同名 collector 已注册（同一 Registry + namespace 下创建多个 Client 是
+	// 真实场景：一个服务调多个上游）时复用既有实例；同名异型 panic 人话文案。
+	m.requestsTotal = metrics.RegisterReuse(reg, prom.NewCounterVec(prom.CounterOpts{
 		Name:      "requests_total",
 		Namespace: namespace,
 		Help:      "Total number of outgoing HTTP requests.",
-	}, []string{"service", "target", "method", "status_code"}))
-	m.requestDuration = mustRegisterReuse(reg, prom.NewHistogramVec(prom.HistogramOpts{
+	}, []string{"service", "target", "method", "status_code"}), metrics.WithReuseOwner("httpx"))
+	m.requestDuration = metrics.RegisterReuse(reg, prom.NewHistogramVec(prom.HistogramOpts{
 		Name:      "request_duration_seconds",
 		Namespace: namespace,
 		Help:      "Duration of outgoing HTTP requests in seconds.",
 		Buckets:   prom.DefBuckets,
-	}, []string{"service", "target", "method"}))
-	m.requestsInFlight = mustRegisterReuse(reg, prom.NewGaugeVec(prom.GaugeOpts{
+	}, []string{"service", "target", "method"}), metrics.WithReuseOwner("httpx"))
+	m.requestsInFlight = metrics.RegisterReuse(reg, prom.NewGaugeVec(prom.GaugeOpts{
 		Name:      "requests_in_flight",
 		Namespace: namespace,
 		Help:      "Number of outgoing HTTP requests currently in flight.",
-	}, []string{"service", "target", "method"}))
+	}, []string{"service", "target", "method"}), metrics.WithReuseOwner("httpx"))
 	m.rm = resilience.NewMetrics(reg, namespace)
 	return m
 }
 
 // metricsKind 是 httpx 在弹性指标里的 kind 标签值。
 const metricsKind = "httpx"
-
-// mustRegisterReuse 注册 collector；同名 collector 已注册（同一 Registry +
-// namespace 下创建多个 Client 是真实场景：一个服务调多个上游）时复用既有
-// 实例而非 panic。其余注册错误仍 panic（与 MustRegister 语义一致）。
-func mustRegisterReuse[T prom.Collector](reg prom.Registerer, fresh T) T {
-	if err := reg.Register(fresh); err != nil {
-		var are prom.AlreadyRegisteredError
-		if errors.As(err, &are) {
-			existing, ok := are.ExistingCollector.(T)
-			if !ok {
-				// 同名同描述符但**类型不同** ⇒ prometheus 返回 AlreadyRegisteredError
-				// （而非直接拒绝），既有 collector 无法当作请求的那个类型复用。
-				// 直接 .(T) 会 panic 成一句不可定位的 "interface conversion"——
-				// 换成人能读懂的错误（既有类型 vs 请求类型 + 怎么改）。
-				panic(fmt.Errorf("httpx: 同名 collector 类型不符：已注册 %T，请求 %T"+
-					"（fqName 与描述符相同但类型不同——请改用同一类型的同名指标，或换 namespace）",
-					are.ExistingCollector, fresh))
-			}
-			return existing
-		}
-		panic(err)
-	}
-	return fresh
-}
 
 // recordRequestEnd 记录一次请求结束的指标：in-flight 减一 + 总数/时延。
 // in-flight 的加一在请求开始处（setupMetricsMiddleware）直接 Inc。

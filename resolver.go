@@ -247,7 +247,18 @@ type NNSResolver struct {
 }
 
 // NewNNSResolver 创建 NNS 解析器。
+//
+// nnsClient 为 nil 时构造期 panic（#163，对齐 hertz/nns NewRegistry 的
+// "requires non-nil client" 口径）：nil 客户端放过去的话，故障点在首个
+// 刷新 tick 的 GetInstances——async.GoSafe 只 recover 不重启，刷新循环
+// 当场静默死亡，EndpointManager 节点恒空、全部请求静默回落 baseURL 或
+// 报无节点，且无任何「刷新已停」的信号。构造期 fail-fast 让配置错误
+// 启动即暴露。经 WithNNS 使用时构造错误走 NewClient 的 error 返回
+// （见 WithNNS），不升级为进程死亡。
 func NewNNSResolver(serviceName string, nnsClient NNSClient) *NNSResolver {
+	if nnsClient == nil {
+		panic("httpx: NewNNSResolver requires non-nil nnsClient")
+	}
 	return &NNSResolver{
 		serviceName: serviceName,
 		nnsClient:   nnsClient,
