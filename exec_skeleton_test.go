@@ -65,8 +65,12 @@ func TestExecSkeleton_PriorityQueueFull_RejectsAllPaths(t *testing.T) {
 	rt := &roundTripper{c: c}
 	// RoundTrip 的 ctx 取自 req.Context()，必须带超时——Acquire 阻塞等取消
 	req := httptest.NewRequest(http.MethodGet, srvURL+"/x", nil).WithContext(ctx)
-	if _, err := rt.RoundTrip(req); err == nil || !strings.Contains(err.Error(), "request cancelled due to priority queue") {
+	resp, err := rt.RoundTrip(req)
+	if err == nil || !strings.Contains(err.Error(), "request cancelled due to priority queue") {
 		t.Errorf("RoundTrip: got %v, want priority-queue rejection", err)
+	}
+	if resp != nil && resp.Body != nil {
+		resp.Body.Close()
 	}
 }
 
