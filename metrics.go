@@ -33,9 +33,18 @@ type clientMetrics struct {
 }
 
 // newClientMetrics 创建并注册客户端指标。
+//
+// reg 为 nil 时回退 metrics.Registry（#181）：平台 /metrics 端点只 gather
+// metrics.Registry（hertz/metrics 的 MetricsHandler 口径），此前回退
+// prom.DefaultRegisterer 的 nil 缺省路径让请求指标 + resilience 弹性指标
+// 全部注册成功却抓不到（可观测性静默丢失，metrics#50 点名的 httpx 半边——
+// #50 只修了 NewMetrics 自己的回退，httpx 在调用前已把 nil 回填成非 nil，
+// 修复对其不生效）。现与 resilience.NewMetrics 的 nil 回退、metrics.Init 的
+// 注册目标三处统一；确需进 prom 默认全局 registry 的调用方显式传
+// prom.DefaultRegisterer。
 func newClientMetrics(reg prom.Registerer, namespace string) *clientMetrics {
 	if reg == nil {
-		reg = prom.DefaultRegisterer
+		reg = metrics.Registry
 	}
 	if namespace == "" {
 		namespace = "http_client"

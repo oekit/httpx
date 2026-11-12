@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/cloudwego/hertz/pkg/app/client"
@@ -41,8 +42,24 @@ var (
 type ClientOption func(*Client)
 
 // WithBaseURL 设置客户端的基础 URL。
+// 空 URL 是显式「无 baseURL」（相对路径按原样发出，直连形态）；非空值在
+// 构造期校验（#169）：url.Parse 失败或 Host 为空（漏 scheme 的 "host:port"、
+// 拼错的 "http:/x" 等）使 NewClient 显式返回 error——修复前坏值静默存活到
+// 首个请求才以难定位的拨号错误暴露。
 func WithBaseURL(u string) ClientOption {
-	return func(c *Client) { c.baseURL = u }
+	return func(c *Client) {
+		if u == "" {
+			c.baseURL = ""
+			return
+		}
+		parsed, err := url.Parse(u)
+		if err != nil || parsed.Host == "" {
+			c.setConstructErr(fmt.Errorf(
+				"httpx: WithBaseURL: 非法 baseURL %q（url.Parse 失败或缺少 host；应为 scheme://host[:port] 形态，如 http://user-service:8080）", u))
+			return
+		}
+		c.baseURL = u
+	}
 }
 
 // WithTimeout 设置 HTTP 请求超时预算，同时覆盖**拨号**与**响应读取**两个
@@ -60,9 +77,19 @@ func WithBaseURL(u string) ClientOption {
 //   - 拨号预算在自定义拨号器形态下的边界（#151）：WithSafeDial 全程透传（拨号
 //     阶段真实受控）；WithDialFunc 注入的自定义 DialFunc 签名（func(addr)）
 //     装不下预算，建连预算由拨号器自身决定；
-//   - 流式响应（SSE/代理长连接/WS 升级）不能用整段读超时掐流，用 WithStream。
+//   - 流式响应（SSE/代理长连接/WS 升级）不能用整段读超时掐流，用 WithStream；
+//   - d <= 0 是构造期非法值（#169）：hertz 直传 net.DialTimeout 后按 net 包
+//     契约「negative or zero means no timeout」解析，负值/零把拨号与读双双
+//     退化为无限等待，与本选项「总预算有上界」的承诺相反——NewClient 构造期
+//     显式报错（#83 constructErr 口径），不静默放行。真要关超时（流式等）
+//     用 WithStream 或逃生舱 WithHertzOption 显式声明。
 func WithTimeout(d time.Duration) ClientOption {
 	return func(c *Client) {
+		if d <= 0 {
+			c.setConstructErr(fmt.Errorf(
+				"httpx: WithTimeout: d must be > 0, got %s——负值/零会让拨号与读超时双双退化为无限等待（net 包契约 negative or zero means no timeout）；流式等需要关闭读超时的场景用 WithStream，彻底不限经 WithHertzOption(client.WithDialTimeout(0), client.WithClientReadTimeout(0)) 显式声明", d))
+			return
+		}
 		c.hzOpts = append(c.hzOpts,
 			client.WithDialTimeout(d),
 			client.WithClientReadTimeout(d),
@@ -232,6 +259,14 @@ func WithTracePropagation() ClientOption {
 }
 
 // WithMetrics 为客户端启用 Prometheus 指标采集。
+//
+// registry 为 nil 时**显式回退 metrics.Registry**（#181，语义与
+// resilience.NewMetrics 的 nil 回退、metrics.Init 的注册目标三处统一）：
+// oekit/metrics.Registry 是平台 /metrics 端点 gather 的目标 registry，
+// 缺省形态下请求指标与弹性指标都能被平台抓到。修复前 nil 回退
+// prom.DefaultRegisterer——平台端点只 gather metrics.Registry，指标注册成功
+// 却抓不到，可观测性静默丢失。确需进 prom 默认全局 registry 的调用方显式传
+// prom.DefaultRegisterer。namespace 为空时前缀 http_client。
 func WithMetrics(registry prom.Registerer, namespace string) ClientOption {
 	return func(c *Client) {
 		c.metrics = newClientMetrics(registry, namespace)

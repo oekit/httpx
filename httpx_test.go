@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -486,4 +487,84 @@ func TestClient_Close(t *testing.T) {
 	c := MustNewClient("test", WithEndpoints("http://1.1.1.1"))
 	c.Close()
 	// 不应该 panic
+}
+
+// TestWithTimeout_NonPositiveRejected 回归（#169）：WithTimeout 负值/零是
+// 构造期非法值——hertz 直传 net.DialTimeout 后按 net 包契约「negative or
+// zero means no timeout」解析，负值/零把拨号与读双双退化为无限等待，与本
+// 选项「总预算有上界」的承诺相反。构造期 fail-fast（#83 constructErr 口径）。
+func TestWithTimeout_NonPositiveRejected(t *testing.T) {
+	for _, d := range []time.Duration{-1, -time.Second, 0} {
+		c, err := NewClient("svc", WithTimeout(d))
+		if err == nil {
+			if c != nil {
+				c.Close()
+			}
+			t.Errorf("WithTimeout(%v) = nil error, want construct error (#169)", d)
+			continue
+		}
+		if !strings.Contains(err.Error(), "d must be > 0") {
+			t.Errorf("WithTimeout(%v) error = %v, want guidance message", d, err)
+		}
+		if !strings.Contains(err.Error(), "WithStream") {
+			t.Errorf("WithTimeout(%v) error = %v, want escape-hatch pointer (WithStream)", d, err)
+		}
+	}
+	// 非法值不得部分装配：报错后 hzOpts 无该选项（NewClient 已失败，这里
+	// 验证 option 本身没有在报错前 append）
+	c := &Client{}
+	WithTimeout(-1)(c)
+	if len(c.hzOpts) != 0 {
+		t.Errorf("WithTimeout(-1) appended %d hertz options before failing, want 0", len(c.hzOpts))
+	}
+}
+
+// TestWithTimeout_PositiveStillAccepted 钉住 #169 不误伤：正值照常生效。
+func TestWithTimeout_PositiveStillAccepted(t *testing.T) {
+	c := MustNewClient("svc", WithTimeout(5*time.Second))
+	defer c.Close()
+	opts := c.Hertz().GetOptions()
+	if opts.DialTimeout != 5*time.Second || opts.ReadTimeout != 5*time.Second {
+		t.Errorf("dial=%v read=%v, want both 5s", opts.DialTimeout, opts.ReadTimeout)
+	}
+}
+
+// TestWithBaseURL_InvalidRejected 回归（#169）：非空 baseURL 构造期校验——
+// url.Parse 失败或 Host 为空（漏 scheme 的 "host:port"、拼错的 "http:/x"）
+// 使 NewClient 显式报错；修复前坏值静默存活到首个请求才以难定位的拨号
+// 错误暴露。空 URL 是显式「无 baseURL」，保持合法（语义不回归）。
+func TestWithBaseURL_InvalidRejected(t *testing.T) {
+	for _, u := range []string{
+		"host:8080",     // 漏 scheme：解析为 scheme=host, host 空
+		"http:/missing", // 单斜杠：无 host
+		"http://",       // 有 scheme 无 host
+		"://no-scheme",  // url.Parse 直接报错
+	} {
+		c, err := NewClient("svc", WithBaseURL(u))
+		if err == nil {
+			if c != nil {
+				c.Close()
+			}
+			t.Errorf("WithBaseURL(%q) = nil error, want construct error (#169)", u)
+			continue
+		}
+		if !strings.Contains(err.Error(), "非法 baseURL") {
+			t.Errorf("WithBaseURL(%q) error = %v, want 非法 baseURL message", u, err)
+		}
+	}
+
+	// 空 URL 合法（显式无 baseURL）
+	c, err := NewClient("svc", WithBaseURL(""))
+	if err != nil {
+		t.Errorf("WithBaseURL(\"\") = %v, want nil（空是显式无 baseURL）", err)
+	}
+	if c != nil {
+		c.Close()
+	}
+	// 合法值照常生效
+	c = MustNewClient("svc", WithBaseURL("http://example.com:8080/base"))
+	defer c.Close()
+	if c.baseURL != "http://example.com:8080/base" {
+		t.Errorf("baseURL = %q, want unchanged", c.baseURL)
+	}
 }

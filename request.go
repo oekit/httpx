@@ -41,7 +41,11 @@ func (c *Client) guardPriority(ctx context.Context) (Priority, error) {
 	}
 	priority := GetPriority(ctx)
 	if !c.priorityQueue.Acquire(ctx, priority) {
-		return PriorityNormal, fmt.Errorf("%s: request cancelled due to priority queue", c.service)
+		// #165：可分流哨兵 ErrPriorityUnavailable + ctx 取消原因一并 %w
+		// （Acquire 仅在 ctx.Done 时返回 false——队列满会阻塞等待至取消），
+		// errors.Is(err, ErrPriorityUnavailable) / errors.Is(err, context.Canceled)
+		// 均可判定。文案前缀与历史逐字节一致（等价性基线见 exec_skeleton_test.go）。
+		return PriorityNormal, fmt.Errorf("%s: %w (%w)", c.service, ErrPriorityUnavailable, ctx.Err())
 	}
 	return priority, nil
 }
@@ -145,7 +149,9 @@ func marshalJSONBody(c *Client, body any) func() ([]byte, string, error) {
 func (c *Client) DoCodec(ctx context.Context, codecName, method, path string, body any, out any) error {
 	cd := codec.GetCodec(codecName)
 	if cd == nil {
-		return fmt.Errorf("%s: unknown codec %q", c.service, codecName)
+		// #165：可分流哨兵 ErrUnknownCodec（%w），errors.Is 单源判定，
+		// 文案与历史逐字节一致。
+		return fmt.Errorf("%s: %w %q", c.service, ErrUnknownCodec, codecName)
 	}
 	_, _, err := c.exec(ctx, method, path, method+" "+path, "request failed",
 		func() ([]byte, string, error) {

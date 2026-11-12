@@ -35,7 +35,9 @@ type Node interface {
 	Weight() float64
 	// ServiceName 是节点所属服务名。
 	ServiceName() string
-	// Metadata 是节点元数据（版本、区域、集群等）。
+	// Metadata 是节点元数据（版本、区域、集群等）。返回 map 是底层实例
+	// 元数据的只读共享视图（#166）：调用方不得修改——实现按零拷贝返回，
+	// 修改即写穿注册中心实例与选择器视图；WithFilter 等消费方只读使用。
 	Metadata() map[string]string
 }
 
