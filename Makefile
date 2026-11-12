@@ -1,4 +1,4 @@
-.PHONY: test test-race test-coverage lint fmt vet ci tidy
+.PHONY: test test-race test-coverage lint fmt vet ci check-logkey tidy
 
 ## test: 运行所有单元测试
 test:
@@ -26,8 +26,14 @@ fmt:
 vet:
 	go vet ./...
 
-## ci: 模拟 CI 流程（fmt 检查 + vet + test-race）
-ci:
+## check-logkey: 禁手写 "err"/"error" 字面量日志字段（AGENTS.md logx.ErrKey
+## 红线，#180；错误字段名一律用 logx.ErrKey 常量，防止回潮）
+check-logkey:
+	@hits=$$(grep -rEn '"(err|error)",' --include='*.go' --exclude='*_test.go' . 2>/dev/null); \
+	test -z "$$hits" || { echo "$$hits"; echo "发现手写 err/error 日志字段字面量，请改用 logx.ErrKey（AGENTS.md 日志红线，#180）" && exit 1; }
+
+## ci: 模拟 CI 流程（fmt 检查 + logx.ErrKey 红线 + vet + test-race）
+ci: check-logkey
 	@test -z "$$(gofmt -l . | grep -v vendor | tee /dev/stderr)" || (echo "请运行 make fmt" && exit 1)
 	go vet ./...
 	go test -race -count=1 ./...

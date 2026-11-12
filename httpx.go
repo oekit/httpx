@@ -13,6 +13,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/network"
 	"github.com/cloudwego/hertz/pkg/protocol"
 	"github.com/oekit/httpx/loadbalance"
+	"github.com/oekit/logx"
 	"github.com/oekit/metrics/resilience"
 )
 
@@ -137,8 +138,11 @@ func NewClient(service string, opts ...ClientOption) (*Client, error) {
 	// 多于一个时,首个走 UseAsLast,剩余走 Use(在 Use 链尾提前)。
 	if len(c.lastMW) > 0 {
 		if err := c.client.UseAsLast(c.lastMW[0]); err != nil {
+			// #180：字段名统一 logx.ErrKey（禁止手写 "err" 字面量），值形态
+			// 统一 error 对象（与 resolver.go 两处一致，按字段做类型化解析的
+			// 下游看到同一形态）
 			httpLog.Warn("httpx: UseAsLast failed, falling back to Use",
-				"err", err.Error())
+				logx.ErrKey, err)
 			c.client.Use(c.lastMW[0])
 		}
 		for _, mw := range c.lastMW[1:] {

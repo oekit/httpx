@@ -144,7 +144,7 @@ func (m *EndpointManager) refreshNodes(ctx context.Context) {
 	if ir, ok := m.resolver.(InstanceResolver); ok {
 		insts, err := ir.ResolveInstances(ctx)
 		if err != nil {
-			httpLog.Warn("refresh instances failed, using cached", "err", err)
+			httpLog.Warn("refresh instances failed, using cached", logx.ErrKey, err)
 			return
 		}
 		if len(insts) == 0 {
@@ -155,7 +155,7 @@ func (m *EndpointManager) refreshNodes(ctx context.Context) {
 	} else {
 		endpoints, err := m.resolver.Resolve(ctx)
 		if err != nil {
-			httpLog.Warn("refresh endpoints failed, using cached", "err", err)
+			httpLog.Warn("refresh endpoints failed, using cached", logx.ErrKey, err)
 			return
 		}
 		if len(endpoints) == 0 {
@@ -184,14 +184,20 @@ func NodesFromEndpoints(endpoints []string) []loadbalance.Node {
 }
 
 // GetNodes 获取节点快照（优先最新，降级缓存）。
+// 返回内部切片的防御性副本（#166）：修复前直接返回 m.nodes/m.cachedNodes，
+// 调用方对返回切片做元素赋值即并发改写选择器视图（别名写穿面暴露在导出
+// API）。每次调用一次拷贝，节点快照规模有限，热路径影响可忽略。
 func (m *EndpointManager) GetNodes() []loadbalance.Node {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	if len(m.nodes) > 0 {
-		return m.nodes
+	nodes := m.nodes
+	if len(nodes) == 0 {
+		nodes = m.cachedNodes
 	}
-	return m.cachedNodes
+	m.mu.RUnlock()
+
+	out := make([]loadbalance.Node, len(nodes))
+	copy(out, nodes)
+	return out
 }
 
 // SetEndpoints 设置静态端点列表（等权合成，停止动态刷新语义不变）。
@@ -200,11 +206,17 @@ func (m *EndpointManager) SetEndpoints(endpoints []string) {
 }
 
 // SetNodes 直接设置节点快照。
+// 存储前对入参做防御性拷贝（#166）：调用方后续修改入参切片不会写穿管理器
+// 视图；WithRefreshInterval 迁移节点（m.SetNodes(old.GetNodes())）时新旧
+// manager 也不再共享底层数组。两个内部字段共享同一份拷贝——快照更新一律
+// 整体替换（refreshNodes/SetNodes），从不原位改元素，无别名风险。
 func (m *EndpointManager) SetNodes(nodes []loadbalance.Node) {
+	cp := make([]loadbalance.Node, len(nodes))
+	copy(cp, nodes)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.nodes = nodes
-	m.cachedNodes = nodes
+	m.nodes = cp
+	m.cachedNodes = cp
 }
 
 // Pick 选择一个节点地址，返回地址与结果回写句柄（调用结束后以最终

@@ -317,3 +317,119 @@ func TestSelectorP2CSingleNodeRecordsSample(t *testing.T) {
 		t.Fatalf("single-node branch dropped sampling: EWMA = %v nanos", ewma)
 	}
 }
+
+// TestSelectorP2C_ViewChangePrunesStaleEwma 回归（#170）：候选视图变化时
+// （节点下线）候选外地址的 EWMA 必须被清掉——修复前靠每请求全量清理兜底，
+// 重构为「视图未变跳过清理」后，清理语义钉在视图变化一代上。
+func TestSelectorP2C_ViewChangePrunesStaleEwma(t *testing.T) {
+	s := newP2CSelector()
+	ctx := context.Background()
+
+	// 直接预置统计（确定性）：leaving 下线后必须被清，stay 在线必须保留
+	s.mu.Lock()
+	s.ewma["leaving"] = 1
+	s.ewma["stay"] = 2
+	s.mu.Unlock()
+
+	// 节点下线：候选只剩 stay
+	if _, _, err := s.Select(ctx, nodesOf("stay")); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	_, leavingLeft := s.ewma["leaving"]
+	_, stayLeft := s.ewma["stay"]
+	s.mu.Unlock()
+	if leavingLeft {
+		t.Error("stale address ewma not pruned after view change (#170)")
+	}
+	if !stayLeft {
+		t.Error("live address ewma must survive pruning")
+	}
+}
+
+// TestSelectorP2C_ViewRejoinRestartsClean 钉住 #170 的对偶面：节点回线
+// （离开后重新进入候选）以未知 EWMA（0）重新参与试探——离线期间的旧统计
+// 不得复活。
+func TestSelectorP2C_ViewRejoinRestartsClean(t *testing.T) {
+	s := newP2CSelector()
+	ctx := context.Background()
+
+	// a 下线：其统计必须被清（后续回线以未知 EWMA 0 重新参与试探，
+	// 离线期间的旧统计不得复活）
+	s.mu.Lock()
+	s.ewma["a"] = 1
+	s.ewma["b"] = 2
+	s.mu.Unlock()
+
+	if _, _, err := s.Select(ctx, nodesOf("b")); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	_, aLeft := s.ewma["a"]
+	s.mu.Unlock()
+	if aLeft {
+		t.Error("offline address ewma must be pruned so rejoin restarts clean (#170)")
+	}
+}
+
+// TestSelectorP2C_UnchangedViewKeepsStats 钉住 #170 的语义保底：候选视图
+// 未变时跳过清理——视图内的既有统计不得被误删（跳过与全量清理在此场景
+// 结果等价，这是选择语义不回归的护栏）。
+func TestSelectorP2C_UnchangedViewKeepsStats(t *testing.T) {
+	s := newP2CSelector()
+	ctx := context.Background()
+	nodes := nodesOf("a", "b")
+
+	// 直接预置两个地址的统计（确定性），随后同视图多次 Select + done 回写
+	s.mu.Lock()
+	s.ewma["a"] = 1
+	s.ewma["b"] = 2
+	s.mu.Unlock()
+
+	for i := 0; i < 10; i++ {
+		n, d, err := s.Select(ctx, nodes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		d(ctx, DoneInfo{})
+		if n == nil {
+			t.Fatal("nil node")
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, aLeft := s.ewma["a"]
+	_, bLeft := s.ewma["b"]
+	if !aLeft || !bLeft {
+		t.Errorf("stats must not vanish on unchanged view: a-present=%v b-present=%v", aLeft, bLeft)
+	}
+	if len(s.ewma) != 2 {
+		t.Errorf("ewma entries must stay within candidate view: got %d entries, want 2", len(s.ewma))
+	}
+}
+
+// TestSelectorP2C_FilteredCandidatesPrune 钉住 WithFilter 语义不回归：候选
+// 被 WithFilter 过滤时，过滤外地址的统计被清理（历史行为：live 集合按过滤后
+// 候选构建）；视图在过滤/不过滤间切换时行为与重构前一致。
+func TestSelectorP2C_FilteredCandidatesPrune(t *testing.T) {
+	s := newP2CSelector()
+	ctx := context.Background()
+	nodes := nodesOf("a", "b")
+
+	_, done, err := s.Select(ctx, nodes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done(ctx, DoneInfo{})
+
+	// 过滤到只剩 a：b 的统计被清（历史行为保持）
+	if _, _, err := s.Select(ctx, nodes, WithFilter(func(n Node) bool { return n.Address() == "a" })); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	_, bLeft := s.ewma["b"]
+	s.mu.Unlock()
+	if bLeft {
+		t.Error("filtered-out address ewma must be pruned (historical behavior)")
+	}
+}

@@ -292,3 +292,33 @@ func TestExecSkeleton_LbDoneSuccessNilErr(t *testing.T) {
 		t.Errorf("non-2xx DoneInfo.Err = %v, want nil（现状：lbDone 在 handleResponse 之前回写，#164）", got)
 	}
 }
+
+// TestExecSkeleton_PriorityRejectionSentinel 回归（#165）：队列拒绝错误
+// 必须可经哨兵 ErrPriorityUnavailable 与 ctx 取消原因双路 errors.Is 分流
+// （修复前两者都只埋在文案里，调用方只能 strings.Contains）。
+func TestExecSkeleton_PriorityRejectionSentinel(t *testing.T) {
+	srvURL, _ := jsonServer(t, http.StatusOK, `{}`)
+	c := MustNewClient("test", WithBaseURL(srvURL), WithPriorityQueue(1))
+	defer c.Close()
+	release := fillPriorityQueue(t, c.priorityQueue)
+	defer release()
+
+	// ctx 带短超时：Acquire 阻塞等待至超时（队列满 → ctx.Done → 返回 false）
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	err := c.DoCodec(ctx, codec.DefaultName, http.MethodGet, "/x", nil, nil)
+	if err == nil {
+		t.Fatal("saturated queue must reject, got nil")
+	}
+	if !errors.Is(err, ErrPriorityUnavailable) {
+		t.Errorf("err = %v, want errors.Is(err, ErrPriorityUnavailable)", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want errors.Is(err, context.DeadlineExceeded)（ctx 取消原因须以 %%w 携带）", err)
+	}
+	// 文案前缀保持历史逐字节等价（既有基线以 Contains 钉住）
+	if !strings.Contains(err.Error(), "request cancelled due to priority queue") {
+		t.Errorf("err = %v, want historical message prefix", err)
+	}
+}
