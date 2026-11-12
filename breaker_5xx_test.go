@@ -179,3 +179,23 @@ func TestDoCodec_UnknownCodecReturnsError(t *testing.T) {
 		t.Fatalf("err = %v, want service-prefixed message", err)
 	}
 }
+
+// TestDoCodec_UnknownCodecSentinel 回归（#165）：unknown codec 错误必须可经
+// 哨兵 ErrUnknownCodec 分流（errors.Is 单源判定，不再依赖文案匹配）。
+func TestDoCodec_UnknownCodecSentinel(t *testing.T) {
+	c := MustNewClient("v165", WithBaseURL("http://127.0.0.1:1"))
+	defer c.Close()
+
+	var out map[string]any
+	err := c.DoCodec(context.Background(), "no-such-codec", http.MethodGet, "/x", nil, &out)
+	if err == nil {
+		t.Fatal("unknown codec must return error, got nil")
+	}
+	if !errors.Is(err, ErrUnknownCodec) {
+		t.Fatalf("err = %v, want errors.Is(err, ErrUnknownCodec)", err)
+	}
+	// 文案保持历史形态（service 前缀 + quoted codec 名）
+	if !strings.HasPrefix(err.Error(), "v165: unknown codec \"no-such-codec\"") {
+		t.Fatalf("err = %v, want historical message form", err)
+	}
+}

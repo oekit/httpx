@@ -32,6 +32,11 @@ type p2cSelector struct {
 	mu          sync.Mutex
 	ewma        map[string]float64 // address → EWMA(nanos)
 	penaltyNano float64
+	// lastLive 上次清理时的候选地址快照（#170）：候选视图未变时跳过 EWMA
+	// 清理——done 回写只落在候选内地址，视图不变即没有可清理项，热路径
+	// 剩纯 map 读（修复前每请求分配 live map + 两次全量遍历）。思路同
+	// ConsistentHashSelector.sameViewLocked 的「视图未变即复用」。
+	lastLive []string
 }
 
 func newP2CSelector(opts ...SelectorOption) *p2cSelector {
@@ -54,15 +59,11 @@ func (s *p2cSelector) Select(ctx context.Context, nodes []Node, opts ...SelectOp
 	}
 
 	s.mu.Lock()
-	// 候选外地址的统计惰性清掉（节点下线不遗留）
-	live := make(map[string]struct{}, len(cand))
-	for _, n := range cand {
-		live[n.Address()] = struct{}{}
-	}
-	for addr := range s.ewma {
-		if _, ok := live[addr]; !ok {
-			delete(s.ewma, addr)
-		}
+	// 候选外地址的统计惰性清掉（节点下线不遗留）：仅候选视图变化时执行
+	// 清理（#170）——视图未变时不存在「候选外的新 EWMA 项」（done 只写
+	// 候选内地址），跳过清理与全量清理结果等价
+	if !s.sameCandidatesLocked(cand) {
+		s.pruneEWMALocked(cand)
 	}
 
 	var chosen Node
@@ -96,6 +97,45 @@ func (s *p2cSelector) Select(ctx context.Context, nodes []Node, opts ...SelectOp
 	// （#108）；单候选场景同样建立采样。
 	start := time.Now()
 	return chosen, s.makeDone(chosen, start), nil
+}
+
+// sameCandidatesLocked 候选地址视图与上次清理时一致（调用方持有锁）。
+// 逐元素比较、零分配；顺序敏感——服务发现快照在两次刷新之间顺序稳定
+// （EndpointManager.GetNodes 返回同一份切片的副本），乱序重排会落在刷新
+// 代际上，代价仅是触发一次清理。
+func (s *p2cSelector) sameCandidatesLocked(cand []Node) bool {
+	if len(s.lastLive) != len(cand) {
+		return false
+	}
+	for i, n := range cand {
+		if s.lastLive[i] != n.Address() {
+			return false
+		}
+	}
+	return true
+}
+
+// pruneEWMALocked 清掉候选外地址的 EWMA 并记录本次候选视图（调用方持有锁）。
+// 只在视图变化时执行（#170）：live map 的分配与 ewma 全量遍历都摊到刷新
+// 代际，稳态热路径零分配。
+func (s *p2cSelector) pruneEWMALocked(cand []Node) {
+	live := make(map[string]struct{}, len(cand))
+	for _, n := range cand {
+		live[n.Address()] = struct{}{}
+	}
+	for addr := range s.ewma {
+		if _, ok := live[addr]; !ok {
+			delete(s.ewma, addr)
+		}
+	}
+	if cap(s.lastLive) >= len(cand) {
+		s.lastLive = s.lastLive[:0]
+	} else {
+		s.lastLive = make([]string, 0, len(cand))
+	}
+	for _, n := range cand {
+		s.lastLive = append(s.lastLive, n.Address())
+	}
 }
 
 // makeDone 组装结果回写：以 done 调用时刻与本次 Select（start）的间隔为采样
