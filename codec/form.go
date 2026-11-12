@@ -66,7 +66,7 @@ func encodeForm(v any) (url.Values, error) {
 	}
 	vals := url.Values{}
 	rt := rv.Type()
-	for i := 0; i < rt.NumField(); i++ {
+	for i := range rt.NumField() {
 		f := rt.Field(i)
 		if !f.IsExported() {
 			continue
@@ -77,7 +77,7 @@ func encodeForm(v any) (url.Values, error) {
 		}
 		fv := rv.Field(i)
 		if fv.Kind() == reflect.Slice {
-			for j := 0; j < fv.Len(); j++ {
+			for j := range fv.Len() {
 				s, err := scalarToString(fv.Index(j))
 				if err != nil {
 					return nil, fmt.Errorf("form: field %s: %w", f.Name, err)
@@ -105,7 +105,7 @@ func decodeForm(vals url.Values, v any) error {
 		return decodeScalarForm(vals, rv)
 	}
 	rt := rv.Type()
-	for i := 0; i < rt.NumField(); i++ {
+	for i := range rt.NumField() {
 		f := rt.Field(i)
 		if !f.IsExported() {
 			continue
