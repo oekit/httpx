@@ -13,7 +13,8 @@
 //   - DoDetail：status + 原始 body（2xx 也返回）
 //   - net/http 桥接层：NewRoundTripper/StdClient——存量标准库调用方一行
 //     Transport 即接入熔断/重试/指标/链路（重试缺省关、显式开）
-//   - WithDialFunc/WithHertzOption：拨号层拦截与 Hertz 原生选项透传（SSRF 防护）
+//   - WithSafeDial：出站 SSRF 防护一步启用（判定单源 pkg/urlguard）；
+//     WithDialFunc/WithHertzOption 为拨号层拦截与 Hertz 原生选项的通用逃生舱
 //   - WithStream：流式响应预设（关读超时、保留拨号超时）
 //   - DoOnce：client 可注入的低阶一次性请求原语（构造→发出→读尽→返回
 //     status/body；无重试/熔断，弹性语义单点在引擎层）
@@ -68,9 +69,13 @@
 //
 // # 出站 SSRF 防护
 //
-// 调用方 URL 来自不受信输入时做两层检查：URL 层字面量拒绝内网 IP/主机名；
-// 拨号层用 WithDialFunc 在建连前校验解析后的 IP（防 DNS rebinding）。
-// 详见 README「出站 SSRF 防护套路」。
+// 调用方 URL 来自不受信输入时做两层检查：URL 层字面量拒绝内网 IP/主机名
+// （pkg/urlguard 的 IsBlockedURL / Guard.CheckURL）；拨号层用一等入口
+// WithSafeDial 一步启用（#168，判定单源 pkg/urlguard：解析 IP 全量预检 +
+// 实际 RemoteAddr 端点核对闭合重解析 TOCTOU，防 DNS rebinding，含
+// Happy-Eyeballs 覆盖）。WithDialFunc 是通用拨号注入逃生舱——它本身不做
+// 任何 SSRF 校验，不要再照旧例手搓判定面（判定规则单源在 pkg/urlguard，
+// 手搓会与收编后的判定漂移）。详见 README「出站 SSRF 防护套路」。
 //
 // # 监控集成
 //
