@@ -1,8 +1,10 @@
 package httpx
 
 import (
+	"cmp"
 	"context"
 	"hash/fnv"
+	"slices"
 	"sort"
 	"strconv"
 	"sync"
@@ -164,14 +166,14 @@ func buildConsistentRing(nodes []loadbalance.Node, baseReplicas int, hash func([
 				replicas = 4 * baseReplicas
 			}
 		}
-		for r := 0; r < replicas; r++ {
+		for r := range replicas {
 			ring = append(ring, consistentNode{
 				hash: hash([]byte(strconv.Itoa(r) + ":" + n.Address())),
 				idx:  i,
 			})
 		}
 	}
-	sort.Slice(ring, func(a, b int) bool { return ring[a].hash < ring[b].hash })
+	slices.SortFunc(ring, func(a, b consistentNode) int { return cmp.Compare(a.hash, b.hash) })
 	return ring
 }
 
