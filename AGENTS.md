@@ -1,7 +1,7 @@
 # AGENTS.md — oekit/httpx
 
 > HTTP 客户端 + 负载均衡——服务发现/熔断（规范哨兵 ErrCircuitOpen）/重试/指标/OTel 透传；loadbalance Selector 形态（RoundRobin/Random/Weighted/一致性哈希权重感知虚拟副本/p2c 自适应——EWMA 经 DoneFunc 回写建立、Err 计 1s 惩罚；WithFilter 按元数据过滤；v0.4.0 起 Balancer 全家族删除无兼容路径）；codec 注册制编解码器（json 内置 + form 表单，DoCodec 请求按 codec 序列化、响应按 Content-Type 反查回退请求 codec）；v0.6.0 起 net/http 桥接层 NewRoundTripper/StdClient——存量标准库外呼一行 Transport 接入熔断/重试/指标/链路（重试缺省关显式开、非 2xx 非错误、hop-by-hop 隔离，#8）；v0.8.0 起 SafeDialFunc/WithSafeDial 出站 SSRF 防护胶水（判定单源 pkg/urlguard v0.15.0：解析 IP 全量预检 + 实际 RemoteAddr 端点核对闭合重解析 TOCTOU、Happy-Eyeballs 覆盖，构造态豁免；v0.7.0 内置的独立 httpx/urlguard 实现收敛删除，#11）
-> 当前版本：`v0.10.0` · module：`github.com/oekit/httpx` · org：[oekit = Open Easy Kit](https://oekit.github.io)
+> 当前版本：`v0.11.0` · module：`github.com/oekit/httpx` · org：[oekit = Open Easy Kit](https://oekit.github.io)
 
 ## 本仓包含
 `./`、`codec/`、`loadbalance/`
