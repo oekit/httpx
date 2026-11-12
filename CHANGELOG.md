@@ -1,3 +1,7 @@
+## [v0.11.1] — 2026-11-13
+
+- 7 单修复批：哨兵缺口（#165）、GetNodes/SetNodes 别名写穿（#166）、p2c doc（#167）、SSRF WithSafeDial（#168）、WithTimeout 负值 fail-fast（#169）、p2c 热路径去分配（#170）、EndpointManager 测试债（#171）；地板对齐 pkg v0.47.0。
+
 ## [v0.11.0] — 2026-11-12
 
 - - **BREAKING** refactor(options): 删除无实现占位选项 `WithDebug()`（#161）——静默吞配置的误导面（调用方以为开了调试实际什么都没发生）；调试开关统一走 LOG_LEVEL 环境变量（全矩阵口径），挂在 Client 级选项上要么全局改 hlog level（越权副作用）要么继续撒谎。0.x minor 允许 BREAKING，org 内无调用点（已 grep 核对），传 WithDebug() 将编译期暴露
