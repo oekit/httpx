@@ -11,6 +11,8 @@
 //   - roundrobin（轮询）
 //   - random（随机）
 //   - weighted（加权随机）
+//   - p2c（自适应，#167：Power of Two Choices——随机取两个候选选 EWMA 低者，
+//     EWMA 经 DoneFunc 回写建立、Err 计 1s 惩罚，流量自动撬离慢/故障节点）
 //
 // 本包不 import 任何实例类型或框架——registry.Instance 等由调用方经
 // NodesFrom 泛型适配器（字段闭包映射）构造 Node。nns-endpoint 等上层包
