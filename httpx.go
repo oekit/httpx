@@ -188,24 +188,37 @@ func (c *Client) Close() {
 }
 
 func (c *Client) targetLabel() string {
-	if c.target.Load() == nil || *c.target.Load() == "" {
+	// #203：单次 Load——原实现连做三次 atomic.Load（nil 检查、空串检查、
+	// 取值），SetTarget 并发切换时三次读可取到不同值，返回值自相矛盾。
+	p := c.target.Load()
+	if p == nil || *p == "" {
 		return defaultTargetLabel
 	}
-	return *c.target.Load()
+	return *p
 }
 
 func (c *Client) setupMetricsMiddleware() {
 	c.mw = append(c.mw, func(next client.Endpoint) client.Endpoint {
-		return func(ctx context.Context, req *protocol.Request, resp *protocol.Response) error {
+		return func(ctx context.Context, req *protocol.Request, resp *protocol.Response) (err error) {
 			method := string(req.Method())
-			c.metrics.requestsInFlight.WithLabelValues(c.service, c.targetLabel(), method).Inc()
+			// #203：target label 单次读取、Inc/Dec 复用同一值——SetTarget 是
+			// 文档化的运行时更新点，请求 in-flight 期间切换 target 时双读会让
+			// Inc 落旧 series、Dec 落新 series：旧 series in-flight 永久 +1、
+			// 新 series 被减到负数，面板与真实并发永久失真。
+			target := c.targetLabel()
+			c.metrics.requestsInFlight.WithLabelValues(c.service, target, method).Inc()
 			start := time.Now()
-			err := next(ctx, req, resp)
 			statusCode := 0
+			// #203：回写 defer 配对——原直串在 next panic 时 recordRequestEnd
+			// 不执行，同 label +1 永久泄漏且无任何信号；panic 路径 statusCode
+			// 保持 0（与 err != nil 同口径），panic 继续原样上抛。
+			defer func() {
+				c.metrics.recordRequestEnd(c.service, target, method, statusCodeStr(statusCode), time.Since(start))
+			}()
+			err = next(ctx, req, resp)
 			if err == nil {
 				statusCode = resp.StatusCode()
 			}
-			c.metrics.recordRequestEnd(c.service, c.targetLabel(), method, statusCodeStr(statusCode), time.Since(start))
 			return err
 		}
 	})
