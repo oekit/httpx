@@ -120,7 +120,7 @@ func NewClient(service string, opts ...ClientOption) (*Client, error) {
 	}
 	// 熔断 gauge 显式初始化为 closed，series 从创建即存在
 	if c.metrics != nil && c.hasBreaker {
-		c.metrics.rm.ObserveBreakerState(c.service, metricsKind, resilience.StateClosed)
+		c.metrics.rm.ObserveBreakerStateTyped(c.service, metricsKind, resilience.CircuitStateClosed)
 	}
 	// base 中间件最先注册 = 最外层：相对 URI 补 baseURL、补 auth、
 	// cookie jar 注入/回收，使裸 Hertz().Do 与封装方法行为一致
