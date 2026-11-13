@@ -1,3 +1,7 @@
+## [v0.12.0] — 2026-11-13
+
+- **BREAKING**：依赖地板抬 oekit/metrics v0.4.0（其历史 int 入口 State*/StateName/ObserveBreakerState/ObserveTransition 已删）。本仓熔断 seed gauge 迁 ObserveBreakerStateTyped + CircuitStateClosed。下游若直接消费 metrics 历史入口需随地板同迁（metrics v0.4.0 版本节有迁移表）。
+
 ## [v0.11.2] — 2026-11-13
 
 - fix(bridge): RoundTrip 收尾关 body 提到方法入口——guardPriority 拒绝路径不再泄漏请求体（#186）。net/http RoundTripper 契约 must always close the body, including on errors：标准库 send() 错误返回时不兜底关 req.Body，调用方按契约不关——此前只有读体路径内联关，限流拒绝+请求超时窗口直接返回 ⇒ *os.File/管道/流式 body 的 fd 泄漏（密度与限流拒绝频率成正比）。修法：body 收尾 defer 提到方法入口注册一次，所有提前返回路径统一关；读体路径复用已读结果、移除内联 Close（避免双关非幂等 Closer）。回归锚点：占满容量 1 队列 + 已取消 ctx ⇒ 拒绝路径断言 body 已 Close，旧实现红已实测。
