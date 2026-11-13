@@ -7,7 +7,7 @@ require (
 	github.com/oekit/concurrency v0.35.1
 	github.com/oekit/logx v0.10.0
 	github.com/oekit/metrics v0.3.1
-	github.com/oekit/pkg v0.47.1
+	github.com/oekit/pkg v0.48.0
 	github.com/oekit/registry v0.6.0
 	github.com/oekit/tracing v0.4.4
 	github.com/prometheus/client_golang v1.25.0
