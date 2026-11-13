@@ -1,3 +1,9 @@
+## [v0.11.2] — 2026-11-13
+
+- fix(bridge): RoundTrip 收尾关 body 提到方法入口——guardPriority 拒绝路径不再泄漏请求体（#186）。net/http RoundTripper 契约 must always close the body, including on errors：标准库 send() 错误返回时不兜底关 req.Body，调用方按契约不关——此前只有读体路径内联关，限流拒绝+请求超时窗口直接返回 ⇒ *os.File/管道/流式 body 的 fd 泄漏（密度与限流拒绝频率成正比）。修法：body 收尾 defer 提到方法入口注册一次，所有提前返回路径统一关；读体路径复用已读结果、移除内联 Close（避免双关非幂等 Closer）。回归锚点：占满容量 1 队列 + 已取消 ctx ⇒ 拒绝路径断言 body 已 Close，旧实现红已实测。
+
+关联问题单：httpx#186。
+
 ## [v0.11.1] — 2026-11-13
 
 - 7 单修复批：哨兵缺口（#165）、GetNodes/SetNodes 别名写穿（#166）、p2c doc（#167）、SSRF WithSafeDial（#168）、WithTimeout 负值 fail-fast（#169）、p2c 热路径去分配（#170）、EndpointManager 测试债（#171）；地板对齐 pkg v0.47.0。
