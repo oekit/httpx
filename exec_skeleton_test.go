@@ -3,12 +3,14 @@ package httpx
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -71,6 +73,55 @@ func TestExecSkeleton_PriorityQueueFull_RejectsAllPaths(t *testing.T) {
 	}
 	if resp != nil && resp.Body != nil {
 		resp.Body.Close()
+	}
+}
+
+// trackingBody 记录 Close 是否被调用的请求体（#186 锚点用）。
+type trackingBody struct {
+	io.Reader
+	closed atomic.Bool
+}
+
+func (b *trackingBody) Close() error {
+	b.closed.Store(true)
+	return nil
+}
+
+// TestExecSkeleton_RoundTripGuardReject_ClosesBody 回归 #186：net/http
+// RoundTripper 契约「RoundTrip must always close the body, including on
+// errors」——guardPriority 拒绝路径（限流拒绝，恰是高负载窗口）此前直接
+// 返回，req.Body 既不读也不关 ⇒ *os.File/管道/流式 body 的 fd 与上游资源
+// 泄漏，密度与限流拒绝频率成正比。标准库 send() 在 rt.RoundTrip 返回
+// error 时只 stopTimer 不碰 req.Body，调用方按契约不兜底关——收尾责任
+// 在桥接层实现（修法：收尾 defer 提到方法入口，所有提前返回路径统一关）。
+func TestExecSkeleton_RoundTripGuardReject_ClosesBody(t *testing.T) {
+	srvURL, _ := jsonServer(t, http.StatusOK, `{}`)
+	c := MustNewClient("test", WithBaseURL(srvURL), WithPriorityQueue(1))
+	defer c.Close()
+	// 占满容量 1 的队列：拒绝路径确定命中（Acquire 只在 ctx.Done 时返回 false）
+	release := fillPriorityQueue(t, c.priorityQueue)
+	defer release()
+
+	// 已取消 ctx：队列满 + ctx.Done ⇒ Acquire 立即拒绝（等价真实
+	// 「队列被在途请求占满 + 本次请求超时」的高负载窗口）
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	body := &trackingBody{Reader: strings.NewReader("payload")}
+	req := httptest.NewRequest(http.MethodPost, srvURL+"/x", nil)
+	req.Body = body
+	req = req.WithContext(ctx)
+
+	rt := &roundTripper{c: c}
+	resp, err := rt.RoundTrip(req)
+	if err == nil || !errors.Is(err, ErrPriorityUnavailable) {
+		t.Fatalf("got %v, want ErrPriorityUnavailable", err)
+	}
+	if resp != nil && resp.Body != nil {
+		resp.Body.Close()
+	}
+	if !body.closed.Load() {
+		t.Fatal("#186 回归：guardPriority 拒绝路径未关闭 req.Body（违反 RoundTripper 契约：must always close the body, including on errors）")
 	}
 }
 

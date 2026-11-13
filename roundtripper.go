@@ -29,6 +29,9 @@ import (
 //     的 host（仅 path?query 生效）；WithBaseURL 直连模式同样以 baseURL 为准；
 //   - 请求体全量缓冲（重试回放与熔断统计的前提）；响应体全量缓冲后返回——
 //     桥接面向低 QPS 控制面调用，不适合大文件流式场景；
+//   - 请求体由本 Transport 关闭——标准 RoundTripper 契约「must always close
+//     the body, including on errors」（#186）：限流拒绝等错误路径同样关闭，
+//     调用方按契约无需自行关闭（标准库 send() 在错误返回时不兜底）；
 //   - 非 2xx 不是错误（标准库语义）：调用方自行判定 StatusCode；熔断拒绝返回
 //     裸 ErrCircuitOpen（errors.Is 判定）；
 //   - 重试缺省关闭，WithRetryConfig 显式开启；开启后的默认条件带幂等方法门
@@ -84,6 +87,16 @@ func (rt *roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	c := rt.c
 	ctx := req.Context()
 
+	// net/http RoundTripper 契约（#186）：「RoundTrip must always close the
+	// body, including on errors」——标准库 send() 在 rt.RoundTrip 返回 error
+	// 时不碰 req.Body，调用方按契约不兜底关（NewRoundTripper/StdClient 是
+	// 「一行 Transport 接入」的公开 API，泄漏责任在实现侧）。收尾提到方法
+	// 入口注册一次：guardPriority 拒绝等所有提前返回路径都关 body；读体
+	// 路径复用已读结果、不再内联关（避免双关非幂等 Closer）。
+	if req.Body != nil {
+		defer req.Body.Close()
+	}
+
 	priority, err := c.guardPriority(ctx)
 	if err != nil {
 		return nil, err
@@ -94,7 +107,6 @@ func (rt *roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	var body []byte
 	if req.Body != nil {
 		b, err := io.ReadAll(req.Body)
-		req.Body.Close()
 		if err != nil {
 			return nil, fmt.Errorf("%s: read request body: %w", c.service, err)
 		}
