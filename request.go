@@ -106,6 +106,14 @@ func (c *Client) exec(ctx context.Context, method, path, action, failVerb string
 	if buildBody != nil {
 		data, contentType, berr := buildBody()
 		if berr != nil {
+			// #204：选点已发生，回写句柄不得丢弃——buildBody 失败（参数序列化/
+			// 校验错误）同样以该错误回写，否则依赖 DoneFunc 的 Selector
+			// （一致性选点、失败节点计数、健康度衰减）拿不到该次结果，且此
+			// 路径可随同一请求重试反复触发、反馈缺口非单次噪声。契约见
+			// resolveEndpoint godoc：done 需在请求最终结果确定后调用。
+			if lbDone != nil {
+				lbDone(ctx, loadbalance.DoneInfo{Err: berr})
+			}
 			return 0, nil, berr
 		}
 		if data != nil || contentType != "" {

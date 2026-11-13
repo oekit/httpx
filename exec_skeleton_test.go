@@ -344,6 +344,35 @@ func TestExecSkeleton_LbDoneSuccessNilErr(t *testing.T) {
 	}
 }
 
+// TestExecSkeleton_LbDoneCalledOnBuildBodyError 回归（#204）：resolveEndpoint
+// 选点**之后**的 buildBody 失败（参数序列化错误）必须回写 lbDone——修复前
+// 该提前 return 直接丢弃句柄，违反 resolveEndpoint「done 需在请求最终结果
+// 确定后调用」契约：Selector（一致性选点、失败节点计数、健康度衰减）拿不到
+// 该次结果，选了点却像没发生过，且此路径可随同一请求重试反复触发。
+func TestExecSkeleton_LbDoneCalledOnBuildBodyError(t *testing.T) {
+	srvURL, reqs := jsonServer(t, http.StatusOK, `{}`)
+	c, rs := newRecordingClient(t, srvURL)
+
+	// 不可序列化 body：选点在 buildBody 之前已发生，marshal 随后失败
+	err := c.DoCodec(context.Background(), codec.DefaultName, http.MethodPost, "/x",
+		map[string]any{"ch": make(chan int)}, nil)
+	if err == nil || !strings.Contains(err.Error(), "marshal body") {
+		t.Fatalf("DoCodec: got %v, want marshal body error", err)
+	}
+	got := rs.lastErr()
+	if got == nil || errors.Is(got, errNoDoneRecorded) {
+		t.Fatalf("buildBody failure must reach lbDone, got %v", got)
+	}
+	if !strings.Contains(got.Error(), "marshal body") {
+		t.Errorf("DoneInfo.Err = %v, want the buildBody error itself", got)
+	}
+	select {
+	case <-reqs:
+		t.Fatal("marshal error must not reach the wire")
+	default:
+	}
+}
+
 // TestExecSkeleton_PriorityRejectionSentinel 回归（#165）：队列拒绝错误
 // 必须可经哨兵 ErrPriorityUnavailable 与 ctx 取消原因双路 errors.Is 分流
 // （修复前两者都只埋在文案里，调用方只能 strings.Contains）。
