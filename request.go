@@ -18,6 +18,7 @@ import (
 )
 
 // GetJSON 发送 GET 请求并将响应反序列化到 out。
+// 2xx 空响应体（204/Content-Length: 0）不触发反序列化，out 保持零值（#237）。
 func (c *Client) GetJSON(ctx context.Context, path string, out any) error {
 	return c.DoJSON(ctx, http.MethodGet, path, nil, out)
 }
@@ -154,6 +155,11 @@ func marshalJSONBody(c *Client, body any) func() ([]byte, string, error) {
 // （查不到回退请求 codec）。codecName 未注册时返回 error 而非 panic（#114，
 // 与 #83「失败显式返回、不升级为进程死亡」同族契约）：codec 名常来自配置，
 // Must 语义只保留给显式调用 codec.MustGetCodec 的场景。
+//
+// 2xx 且响应体为空（204 No Content、200 + Content-Length: 0、DELETE 的空成功
+// 响应）不触发反序列化、按成功返回，out 保持调用方传入的零值（#237）——
+// 「有内容才解」是本方法对 out 的承诺，修复前是「2xx 且 out 非 nil 就解」，
+// 空体成功被包装成 unmarshal 错误返回。
 func (c *Client) DoCodec(ctx context.Context, codecName, method, path string, body any, out any) error {
 	cd := codec.GetCodec(codecName)
 	if cd == nil {
@@ -245,10 +251,16 @@ func (c *Client) applyAuth(req *protocol.Request) {
 // handleResponse 校验响应状态码并反序列化输出。
 // cd 非 nil 时按其 Content-Type 优先协商（响应头反查，查不到回退 cd）；
 // cd 为 nil 时按 encoding/json 直接解析（历史行为，Upload/DoRaw 路径）。
+//
+// 2xx 且响应体为空（#237）：不触发反序列化、直接按成功返回——204 No Content、
+// 200 + Content-Length: 0、DELETE/PUT 的空成功响应都是标准成功形态，修复前
+// 无条件 json.Unmarshal([]byte{}, out) 返回 "unexpected end of JSON input"，
+// 把**成功的请求**系统性误报成失败（调用方只能逐处改 out=nil 或换 DoDetail
+// 绕开）。此时 out 保持调用方传入的零值。
 func (c *Client) handleResponse(resp *protocol.Response, action string, out any, cd codec.Codec) error {
 	code := resp.StatusCode()
 	if code >= 200 && code < 300 {
-		if out != nil {
+		if out != nil && len(resp.Body()) > 0 {
 			var decodeErr error
 			switch {
 			case cd != nil:
