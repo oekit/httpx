@@ -304,9 +304,9 @@ func TestRetry_OnServerError(t *testing.T) {
 	}
 }
 
-// TestRetry_DelayPolicyActive 钉住退避策略真实生效:hertz WithRetryConfig 默认
-// DelayPolicy 恒返回 0,ekit 必须显式注入 CombineDelay(BackOff, Random),
-// 否则 initDelay/maxJitter 参数全部无效、重试零等待(2026-09-05 修复的回归)。
+// TestRetry_DelayPolicyActive 钉住退避真实生效:WithRetryConfig 的
+// initDelay/maxJitter 必须换算成实际等待,否则重试零退避、参数全部无效
+// (2026-09-05 修复的回归;#236 起退避由 httpx 层 waitRetry 执行,断言不变)。
 func TestRetry_DelayPolicyActive(t *testing.T) {
 	var count atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -314,8 +314,8 @@ func TestRetry_DelayPolicyActive(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	t.Cleanup(srv.Close)
-	// 1 次重试,退避基数 80ms → BackOffDelayPolicy 至少 80ms
-	// (attempts 从 0 或 1 起,延迟 80ms 或 160ms;Random 抖动 [0,5ms))
+	// 1 次重试,退避基数 80ms → 首档 2×initDelay = 160ms(≥60ms 即证退避非零;
+	// 抖动 [0,5ms) 叠加在计算值上)
 	c := MustNewClient("test", WithBaseURL(srv.URL), WithRetryConfig(2, 80*time.Millisecond, 500*time.Millisecond, 5*time.Millisecond))
 	defer c.Close()
 	start := time.Now()
@@ -325,7 +325,7 @@ func TestRetry_DelayPolicyActive(t *testing.T) {
 		t.Errorf("expected 2 total attempts, got %d", got)
 	}
 	if elapsed < 60*time.Millisecond {
-		t.Errorf("expected >=60ms retry backoff (initDelay=80ms), got %v — DelayPolicy 没生效,重试零退避", elapsed)
+		t.Errorf("expected >=60ms retry backoff (initDelay=80ms), got %v — 退避没生效,重试零等待", elapsed)
 	}
 }
 

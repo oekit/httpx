@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -40,10 +41,12 @@ type Client struct {
 	mw                     []client.Middleware
 	lastMW                 []client.Middleware // 走 Hertz client.UseAsLast 注入(trace propagation 等)
 	retryIf                func(req *protocol.Request, resp *protocol.Response, err error) bool
-	retryIfExplicit        bool  // 用户是否显式设置过重试谓词（WithRetryIfFunc）
-	hasBreaker             bool  // WithCircuitBreaker 是否装配（熔断 gauge 初始化用）
-	staticEndpoints        bool  // WithEndpoints 是否装配过（与动态 resolver 互斥判定，#89）
-	constructErr           error // 构造期配置冲突（首个生效），NewClient 汇总返回（#83）
+	retryIfExplicit        bool         // 用户是否显式设置过重试谓词（WithRetryIfFunc）
+	retryPolicy            *retryPolicy // WithRetryConfig 的退避参数快照（nil = 未配置，#236）
+	retryScopes            sync.Map     // *protocol.Request → *retryScope：退避期 ctx/档位（#236）
+	hasBreaker             bool         // WithCircuitBreaker 是否装配（熔断 gauge 初始化用）
+	staticEndpoints        bool         // WithEndpoints 是否装配过（与动态 resolver 互斥判定，#89）
+	constructErr           error        // 构造期配置冲突（首个生效），NewClient 汇总返回（#83）
 }
 
 // NewClient 创建 HTTP 客户端实例，应用指定的配置选项。
@@ -106,16 +109,46 @@ func NewClient(service string, opts ...ClientOption) (*Client, error) {
 		c.setupMetricsMiddleware()
 	}
 	if c.retryIf != nil {
+		// 退避作用域登记（#236）：仅在本层接管退避等待时需要——谓词要从 scope
+		// 取 ctx 做可中断等待、自数 attempts 档位。注册为最外层中间件，封装方法 /
+		// 桥接层 / 直接 Hertz().Do 三个入口全覆盖。
+		if c.retryPolicy != nil {
+			c.client.Use(c.retryScopeMiddleware())
+		}
 		userRetryIf := c.retryIf
 		c.client.SetRetryIfFunc(func(req *protocol.Request, resp *protocol.Response, err error) bool {
 			// 将发生重试时记一次弹性指标（闭包运行时 metrics 已装配，顺序无关）
-			if ok := userRetryIf(req, resp, err); ok {
-				if c.metrics != nil {
-					c.metrics.rm.ObserveRetry(c.service, metricsKind)
-				}
+			if !userRetryIf(req, resp, err) {
+				return false
+			}
+			if c.metrics != nil {
+				c.metrics.rm.ObserveRetry(c.service, metricsKind)
+			}
+			if c.retryPolicy == nil {
+				// 逃生舱形态：调用方经 WithHertzOption 自配了 hertz retry.Config，
+				// 等待由 hertz 侧 DelayPolicy 执行，本层不重复等待。
 				return true
 			}
-			return false
+			// #236：退避在本层等待（可被 ctx 打断）。hertz 随后算出的
+			// retry.Delay 恒为 0（未设 DelayPolicy），不会二次等待。
+			//
+			// #234：Retry-After 建议优先——只有确实收到响应（err == nil）才读
+			// 响应头；传输层失败时 resp 可能残留上一轮的头，读了会把旧建议
+			// 当成本次的。
+			//
+			// ctx 已在等待期间取消时仍返回 true：让 hertz 循环顶部的
+			// ctx.Done 分支以 ctx.Err() 结束请求——返回 false 会把已取消的
+			// 请求当成「重试预算用尽」，调用方拿到的是旧响应而非取消原因。
+			var (
+				hint    time.Duration
+				hasHint bool
+			)
+			if err == nil {
+				hint, hasHint = retryAfterHint(resp)
+			}
+			ctx, attempts := c.takeRetryScope(req)
+			waitRetry(ctx, c.retryPolicy.delay(attempts, hint, hasHint))
+			return true
 		})
 	}
 	// 熔断 gauge 显式初始化为 closed，series 从创建即存在
