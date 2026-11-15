@@ -1,3 +1,14 @@
+## [v0.12.1] — 2026-11-15
+
+- 默认重试谓词接矩阵单源（#234）：状态码面改 concurrency/retry/httpx.Retryable（429+5xx，受幂等门），传输层错误复用 IsTransportRetryable；重试等待优先读本次响应 Retry-After（秒数/HTTP-date 单源解析），maxDelay 仍封顶
+- 半开探测名额耗尽归位 ErrCircuitOpen（#235）：gobreaker.ErrTooManyRequests 与 ErrOpenState 同收敛 ObserveRejected + ErrCircuitOpen
+- 退避可中断且可校验（#236）：waitRetry 用 select{timer,ctx.Done} 可取消（synctest 假时钟钉时序），构造期校验 maxAttempts≤10/maxDelay<0，溢出不回绕
+- 2xx 空响应体不再误报 unmarshal 错（#237）：out 非 nil 且 body 非空才反序列化，空体成功返回零值
+- 直方图桶上界对齐 30s 缺省读超时（#238）：DefBuckets+20s+30s，长尾不再全进 +Inf
+- 构造期失败 lbDone 回写回归钉（#239）：缺陷已由 #204 收口，补五入口统一骨架的回归钉子
+
+关联问题单：httpx#234、httpx#235、httpx#236、httpx#237、httpx#238、httpx#239。
+
 ## [v0.12.0] — 2026-11-13
 
 - **BREAKING**：依赖地板抬 oekit/metrics v0.4.0（其历史 int 入口 State*/StateName/ObserveBreakerState/ObserveTransition 已删）。本仓熔断 seed gauge 迁 ObserveBreakerStateTyped + CircuitStateClosed。下游若直接消费 metrics 历史入口需随地板同迁（metrics v0.4.0 版本节有迁移表）。
