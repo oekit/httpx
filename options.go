@@ -384,18 +384,33 @@ func (e *httpStatusError) Error() string {
 	return fmt.Sprintf("server error: %d", e.code)
 }
 
-// WithRetryConfig 配置请求重试策略,走 Hertz 官方 client.WithRetryConfig。
-// 参数语义:
-//   - maxAttempts:总尝试次数(>=1,含首次请求);0 = 走 Hertz 默认 1 次
-//   - initDelay:首次重试前的等待时间(指数退避基数,对应 retry.Config.Delay)
-//   - maxDelay:重试延迟上限(避免退避无界增长,retry.Delay 内部封顶)
-//   - maxJitter:随机抖动上限(避免雪崩,对应 retry.Config.MaxJitter)
+// WithRetryConfig 配置请求重试策略：次数上限交 hertz 的重试循环，
+// **退避等待由 httpx 层执行**（可被 ctx 打断，#236）。
 //
-// DelayPolicy 必须显式设置:hertz WithRetryConfig 的默认 DelayPolicy 是
-// retry.DefaultDelayPolicy(恒返回 0,参见 hertz pkg/app/client/retry/retry.go),
-// 不设置的话 initDelay/maxDelay/maxJitter 三个参数全部无效、重试零等待。
-// ekit 固定注入 CombineDelay(BackOffDelayPolicy, RandomDelayPolicy):
-// 每次重试延迟 = initDelay<<attempts + [0, maxJitter) 随机抖动,MaxDelay 封顶。
+// 参数语义与构造期校验（#236，非法值在 NewClient 显式报错、不静默放行）：
+//   - maxAttempts：总尝试次数（≥1，含首次请求）；0 = 不重试（hertz 默认 1 次）。
+//     上限 maxRetryAttempts（10）——档位指数增长，无上限的尝试次数是退避放大
+//     的直接来源，超出构造期报错；
+//   - initDelay：指数退避基数，第 attempts 次重试等待 initDelay<<attempts
+//     （首次重试 attempts=1，即 2×initDelay，与 hertz BackOffDelayPolicy 同
+//     口径）；≤0 = 关闭指数退避（与 hertz 同口径）；
+//   - maxDelay：单次重试延迟上限。**>0 封顶；0 = 显式「不封顶」**——此前
+//     godoc 写「retry.Delay 内部封顶」而 hertz 的封顶条件是 MaxDelay > 0，
+//     0 实际不封顶（文档与实现相反）；负值无意义（既非「不封顶」也非封顶），
+//     构造期报错；
+//   - maxJitter：随机抖动上限，实际等待 = 计算值 + [0, maxJitter)；≤0 = 不抖。
+//
+// 单次等待 = initDelay<<attempts + [0, maxJitter)，maxDelay>0 时封顶；
+// 指数档位**溢出饱和**为 MaxInt64 而非回绕成负值（hertz 的 `Delay << attempts`
+// 溢出后经 CombineDelay 的 uint64 转换被钳成 ≈292 年的等待，#236）。
+//
+// ⚠️ 退避可被 ctx 打断（#236）：hertz 的重试循环以裸 time.Sleep 等待、只在
+// 循环顶部查 ctx.Done——退避期间取消/超时不生效，最坏睡满当前档（
+// WithRetryConfig(8, 1s, 0, 0) 的第 7 档 64s），单请求总时长可放大到分钟级，
+// 与 WithTimeout/WithStream「总时长预算由调用方经 ctx 控制」的承诺冲突。
+// 现在等待走 select{timer, ctx.Done()}：取消立即返回，请求以 ctx.Err() 收尾，
+// maxDelay=0 的「不封顶」也因此有 ctx 预算兜底。等待期间 hertz 侧
+// retry.Config 的 DelayPolicy 恒 0（只传次数上限），不会重复等待。
 //
 // ⚠️ 重试触发条件(与 Hertz 默认不同,带幂等方法门 #85):
 //
@@ -408,9 +423,8 @@ func (e *httpStatusError) Error() string {
 //	需要放开旧语义(任何方法都重试)时,经 WithRetryIfFunc 显式声明。
 //
 // 官方依据:https://www.cloudwego.io/zh/docs/hertz/tutorials/basic-feature/client/
-// (Client 配置表 WithRetryConfig 示例明确列出 retry.WithDelayPolicy;
-// 退避/抖动语义见 hertz pkg/app/client/retry 包:BackOffDelayPolicy = Delay<<attempts,
-// RandomDelayPolicy = fastrand.Int63n(MaxJitter),CombineDelay 求和)
+// (尝试次数与重试循环在 hertz pkg/protocol/http1/client.go 的 HostClient.Do;
+// 本层接管的退避语义见 retry_backoff.go)
 //
 // 用法:
 //
@@ -419,17 +433,31 @@ func (e *httpStatusError) Error() string {
 //	)
 func WithRetryConfig(maxAttempts uint, initDelay, maxDelay, maxJitter time.Duration) ClientOption {
 	return func(c *Client) {
+		// 构造期校验（#236）：ClientOption 无法返回错误，先落 constructErr，
+		// NewClient 汇总显式返回（与 #83/#169 同口径）。
+		if maxAttempts > maxRetryAttempts {
+			c.setConstructErr(fmt.Errorf(
+				"httpx: WithRetryConfig: maxAttempts=%d 超出上限 %d——退避档位按 initDelay<<attempts 指数增长，无上限的尝试次数会把单请求退避推到分钟级乃至溢出（需要更长总窗口请调大 initDelay/maxDelay 或显式拆分重试预算）",
+				maxAttempts, maxRetryAttempts))
+			return
+		}
+		if maxDelay < 0 {
+			c.setConstructErr(fmt.Errorf(
+				"httpx: WithRetryConfig: maxDelay=%s 不能为负——负值既不是「封顶」也不是文档化的「0 = 不封顶」，只会被静默当成不封顶放行；需要封顶请传正值，明确不封顶请传 0",
+				maxDelay))
+			return
+		}
+		c.retryPolicy = &retryPolicy{
+			maxAttempts: maxAttempts,
+			initDelay:   initDelay,
+			maxDelay:    maxDelay,
+			maxJitter:   maxJitter,
+		}
+		// hertz 侧只保留尝试次数上限：退避等待已搬到 httpx 层（waitRetry，
+		// 可中断），不再传 InitDelay/MaxDelay/MaxJitter/DelayPolicy——传了也
+		// 因 DelayPolicy 恒 0 而全部失效，是误导性的死配置。
 		c.hzOpts = append(c.hzOpts, client.WithRetryConfig(
 			hertzretry.WithMaxAttemptTimes(maxAttempts),
-			hertzretry.WithInitDelay(initDelay),
-			hertzretry.WithMaxDelay(maxDelay),
-			hertzretry.WithMaxJitter(maxJitter),
-			// 不传 DelayPolicy 时 hertz 默认 DefaultDelayPolicy 恒为 0,
-			// 上面三个延迟参数会全部失效(2026-09-05 复审发现并修复)。
-			hertzretry.WithDelayPolicy(hertzretry.CombineDelay(
-				hertzretry.BackOffDelayPolicy,
-				hertzretry.RandomDelayPolicy,
-			)),
 		))
 		// 默认重试条件：幂等方法门 + (5xx | network error)（#85）。
 		// RetryIfFunc 必须在 client.NewClient 之后通过 SetRetryIfFunc 设置,
