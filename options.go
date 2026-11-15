@@ -284,6 +284,17 @@ func (c *Client) SetTarget(target string) {
 }
 
 // WithCircuitBreaker 为客户端启用熔断器，使用指定的名称和配置。
+//
+// 拒绝语义（#235）：熔断路径的两类拒绝统一收敛——
+//   - open 态拒绝（gobreaker.ErrOpenState）；
+//   - **半开态探测名额耗尽**（gobreaker.ErrTooManyRequests：半开窗口内并发
+//     超过 MaxRequests，缺省 1，第 2 个在 beforeRequest 被拒）；
+//
+// 两者都计入 breaker_rejected_total 并返回同一哨兵 ErrCircuitOpen——半开名额
+// 耗尽语义上就是「熔断尚未放行」，修复前它以裸 "too many requests" 原样漏出：
+// errors.Is(err, ErrCircuitOpen) 恒 false（按「打开→降级/快失败」写的分支
+// 不触发，请求被当成普通上游错误走重试或兜底）、rejected 指标漏计（半开期的
+// 拒绝恰是最该计的那部分）、文案还极易被误读成上游 429。
 func WithCircuitBreaker(name string, settings gobreaker.Settings) ClientOption {
 	return func(c *Client) {
 		userOnStateChange := settings.OnStateChange
@@ -332,7 +343,12 @@ func WithCircuitBreaker(name string, settings gobreaker.Settings) ClientOption {
 					return nil, nil
 				})
 				if execErr != nil {
-					if errors.Is(execErr, gobreaker.ErrOpenState) {
+					// #235：open 态与**半开态名额耗尽**（ErrTooManyRequests）一起
+					// 收敛——后者是真实可达的熔断拒绝路径（半开窗口并发 ≥
+					// MaxRequests，缺省 1），修复前原样漏出：哨兵判定失效 +
+					// rejected 指标漏计 + 文案被误读成上游 429。
+					if errors.Is(execErr, gobreaker.ErrOpenState) ||
+						errors.Is(execErr, gobreaker.ErrTooManyRequests) {
 						if c.metrics != nil {
 							c.metrics.rm.ObserveRejected(c.service, metricsKind)
 						}
