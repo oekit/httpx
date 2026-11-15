@@ -16,6 +16,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/network/dialer"
 	"github.com/cloudwego/hertz/pkg/network/standard"
 	"github.com/cloudwego/hertz/pkg/protocol"
+	retryhttpx "github.com/oekit/concurrency/retry/httpx"
 	"github.com/oekit/httpx/loadbalance"
 	"github.com/oekit/metrics/resilience"
 	prom "github.com/prometheus/client_golang/prometheus"
@@ -415,12 +416,20 @@ func (e *httpStatusError) Error() string {
 // ⚠️ 重试触发条件(与 Hertz 默认不同,带幂等方法门 #85):
 //
 //	Hertz 官方 DefaultRetryIf 仅在幂等方法 + 网络错误时重试,不重试 5xx。
-//	ekit WithRetryConfig 默认重试「幂等方法」上的 5xx + network error——
-//	比 Hertz 宽(补 5xx),比旧版「不看方法一律重试」严;幂等门只按方法判定,
-//	无 body 的 POST 同样判非幂等(#129:副作用在方法+路径上,不在 payload 里)。
-//	旧版默认对 POST 等**非幂等请求**的 5xx 无条件重放,网关恰好超时但
-//	后端已实际写入时会重复下单/重复创建——「保持兼容」不等于「安全默认」。
-//	需要放开旧语义(任何方法都重试)时,经 WithRetryIfFunc 显式声明。
+//	ekit WithRetryConfig 默认重试「幂等方法」上的 429 + 5xx + network error
+//	(#234 补 429:限流此前永不重试),比 Hertz 宽,比旧版「不看方法一律重试」
+//	严;幂等门只按方法判定,无 body 的 POST 同样判非幂等(#129:副作用在方法+
+//	路径上,不在 payload 里)。旧版默认对 POST 等**非幂等请求**的 5xx 无条件
+//	重放,网关恰好超时但后端已实际写入时会重复下单/重复创建——「保持兼容」
+//	不等于「安全默认」。需要放开旧语义(任何方法都重试)时,经 WithRetryIfFunc
+//	显式声明。
+//
+// ⚠️ Retry-After 优先(#234):重试等待先读本次响应的 Retry-After(delay-seconds
+// 与 HTTP-date 双形态,解析复用 concurrency/retry/httpx.ParseRetryAfter 单源),
+// 有建议即**覆盖**上面的计算退避(含抖动)、maxDelay>0 时仍封顶;没有建议才回落
+// 指数退避。429/503 配 Retry-After 是限流的标准形态——修复前服务端的
+// `Retry-After: 60` 被完全无视,`WithRetryConfig(3, 100ms, 1s, …)` 会在
+// ~300ms 内把三个请求打回去,恰好落在限流窗口里。
 //
 // 官方依据:https://www.cloudwego.io/zh/docs/hertz/tutorials/basic-feature/client/
 // (尝试次数与重试循环在 hertz pkg/protocol/http1/client.go 的 HostClient.Do;
@@ -474,9 +483,21 @@ func WithRetryConfig(maxAttempts uint, initDelay, maxDelay, maxJitter time.Durat
 	}
 }
 
-// defaultRetryIf 是 WithRetryConfig 注入的默认重试条件（#85，#129 收口）：
+// defaultRetryIf 是 WithRetryConfig 注入的默认重试条件（#85，#129 收口，
+// #234 补 429）：
 //
-//	幂等方法 && (network error | 5xx)
+//	幂等方法 && (network error（非 ctx 取消）| 429 | 5xx)
+//
+// 状态码面复用矩阵单源 concurrency/retry/httpx.Retryable（429 + 5xx）：修复前
+// 只判 >= 500，**429 永不重试**——限流响应被原样交给调用方，而服务端的意图
+// 是按 Retry-After 退避后重试（429 配 Retry-After 是限流的标准形态）。408 不在
+// 缺省集合（Retryable 的口径）；403 + Retry-After/X-RateLimit-Remaining 这类
+// 平台化限流形态（GitHub 次级限流等）经 WithRetryIfFunc 接
+// RetryableWithHeaders，缺省不放开（403 大多是权限拒绝，盲目重试永远失败）。
+//
+// 传输层错误面复用 IsTransportRetryable：ctx 取消/超时不重试——那是调用方在
+// 收手，重试只会白跑一档退避（修复前一律重试，靠循环顶部的 ctx 检查兜底）；
+// 其余网络错误照旧重试。
 //
 // 幂等门只按方法判定（#129：无 body 的 POST 同样判非幂等——副作用在方法+路径
 // 上，不在 payload 里），对 network error 同样生效——POST 超时时后端可能已
@@ -487,9 +508,9 @@ func defaultRetryIf(req *protocol.Request, resp *protocol.Response, err error) b
 		return false
 	}
 	if err != nil {
-		return true
+		return retryhttpx.IsTransportRetryable(err)
 	}
-	return resp != nil && resp.StatusCode() >= 500
+	return resp != nil && retryhttpx.Retryable(resp.StatusCode())
 }
 
 // idempotentForRetry 判定请求对默认重试是否安全：只按**方法**判定——幂等
@@ -513,9 +534,9 @@ func idempotentForRetry(req *protocol.Request) bool {
 	return false
 }
 
-// WithRetryIfFunc 覆盖 ekit 默认重试触发条件(幂等方法门 + 5xx +
-// network error),由用户传自定义 predicate(更严格:只对特定方法/状态码;
-// 更宽松:放开非幂等请求的重放)。
+// WithRetryIfFunc 覆盖 ekit 默认重试触发条件(幂等方法门 + 429 + 5xx +
+// network error,#234 起 429 属缺省可重试),由用户传自定义 predicate(更严格:
+// 只对特定方法/状态码;更宽松:放开非幂等请求的重放)。
 // 不调 WithRetryIfFunc 时,WithRetryConfig 注入默认条件。
 //
 // **显式谓词永远赢，与 option 顺序无关**（#41）：即便本 option 写在

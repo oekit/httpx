@@ -8,6 +8,7 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app/client"
 	"github.com/cloudwego/hertz/pkg/protocol"
+	retryhttpx "github.com/oekit/concurrency/retry/httpx"
 )
 
 // maxRetryAttempts 是 WithRetryConfig 允许的 maxAttempts 上限（#236）。
@@ -31,6 +32,11 @@ type retryPolicy struct {
 // delay 计算第 attempts 次重试前的等待时长（attempts 从 1 起，与 hertz
 // BackOffDelayPolicy 的 initDelay<<attempts 同口径：首次重试 = 2×initDelay）。
 //
+// hint 是本次响应 Retry-After 的服务端建议（hasHint=false 时忽略）（#234）：
+// 有建议时**覆盖**客户端计算值（含抖动）——服务端对本次限流窗口的直接指令，
+// 客户端退避参数只是它的回退；maxDelay 封顶对建议同样生效（与矩阵单源
+// concurrency/retry 的 DelayHint 口径一致：建议值仍受 MaxDelay 封顶）。
+//
 // 与 hertz retry.Delay 的差异（#236）：
 //   - 指数档位**溢出饱和**到 MaxInt64 而非回绕：hertz 的 `Delay << attempts`
 //     溢出成负值后，CombineDelay 里 `uint64(负值)` 变成天文数字、被钳到
@@ -39,19 +45,37 @@ type retryPolicy struct {
 //     只在 >0 时封顶；
 //   - 抖动 [0, maxJitter) 与 hertz RandomDelayPolicy 同口径（maxJitter <= 0
 //     不抖），且加法同样饱和，不会把接近 MaxInt64 的退避加成负值。
-func (p *retryPolicy) delay(attempts uint) time.Duration {
-	d := p.backoff(attempts)
-	if p.maxJitter > 0 {
-		span := int64(p.maxJitter)
-		if d > time.Duration(math.MaxInt64)-time.Duration(span) {
-			return time.Duration(math.MaxInt64)
+func (p *retryPolicy) delay(attempts uint, hint time.Duration, hasHint bool) time.Duration {
+	var d time.Duration
+	// 负建议视为无效（ParseRetryAfter 不会产出负值，防御下游自造 hint）
+	if hasHint && hint >= 0 {
+		d = hint // 服务端建议直接定档：不再叠加客户端计算值与抖动
+	} else {
+		d = p.backoff(attempts)
+		if p.maxJitter > 0 {
+			span := int64(p.maxJitter)
+			if d > time.Duration(math.MaxInt64)-time.Duration(span) {
+				d = time.Duration(math.MaxInt64)
+			} else {
+				d += time.Duration(rand.Int64N(span))
+			}
 		}
-		d += time.Duration(rand.Int64N(span))
 	}
 	if p.maxDelay > 0 && d > p.maxDelay {
 		return p.maxDelay
 	}
 	return d
+}
+
+// retryAfterHint 读取响应的 Retry-After 建议（#234）：delay-seconds 与
+// HTTP-date 双形态，解析复用矩阵单源 concurrency/retry/httpx.ParseRetryAfter
+// （本仓不再写一份头解析）。未携带/空串/坏值返回 (0, false) 走计算退避；
+// Retry-After: 0 是合法建议（立即重试），返回 (0, true) 与「未携带」可区分。
+func retryAfterHint(resp *protocol.Response) (time.Duration, bool) {
+	if resp == nil {
+		return 0, false
+	}
+	return retryhttpx.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 }
 
 // backoff 指数档位 initDelay<<attempts，溢出饱和（见 delay 注释）。

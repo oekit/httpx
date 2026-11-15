@@ -132,11 +132,22 @@ func NewClient(service string, opts ...ClientOption) (*Client, error) {
 			// #236：退避在本层等待（可被 ctx 打断）。hertz 随后算出的
 			// retry.Delay 恒为 0（未设 DelayPolicy），不会二次等待。
 			//
+			// #234：Retry-After 建议优先——只有确实收到响应（err == nil）才读
+			// 响应头；传输层失败时 resp 可能残留上一轮的头，读了会把旧建议
+			// 当成本次的。
+			//
 			// ctx 已在等待期间取消时仍返回 true：让 hertz 循环顶部的
 			// ctx.Done 分支以 ctx.Err() 结束请求——返回 false 会把已取消的
 			// 请求当成「重试预算用尽」，调用方拿到的是旧响应而非取消原因。
+			var (
+				hint    time.Duration
+				hasHint bool
+			)
+			if err == nil {
+				hint, hasHint = retryAfterHint(resp)
+			}
 			ctx, attempts := c.takeRetryScope(req)
-			waitRetry(ctx, c.retryPolicy.delay(attempts))
+			waitRetry(ctx, c.retryPolicy.delay(attempts, hint, hasHint))
 			return true
 		})
 	}

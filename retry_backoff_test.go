@@ -13,14 +13,17 @@ import (
 	"time"
 )
 
-// TestRetryPolicy_Delay 钉住退避计算（#236）：指数档位与 hertz
+// TestRetryPolicy_Delay 钉住退避计算（#236/#234）：指数档位与 hertz
 // BackOffDelayPolicy 同口径（initDelay<<attempts，首档 2×initDelay）、
-// maxDelay>0 封顶 / 0 显式不封顶、溢出饱和不回绕、initDelay<=0 关闭退避。
+// maxDelay>0 封顶 / 0 显式不封顶、溢出饱和不回绕、initDelay<=0 关闭退避，
+// 以及 Retry-After 建议覆盖计算值、maxDelay 对建议同样封顶（#234）。
 func TestRetryPolicy_Delay(t *testing.T) {
 	cases := []struct {
 		name     string
 		p        retryPolicy
 		attempts uint
+		hint     time.Duration
+		hasHint  bool
 		want     time.Duration
 	}{
 		{
@@ -65,11 +68,44 @@ func TestRetryPolicy_Delay(t *testing.T) {
 			attempts: 1,
 			want:     200 * time.Millisecond,
 		},
+		{
+			name:     "Retry-After 覆盖计算退避与抖动（#234）",
+			p:        retryPolicy{initDelay: time.Second, maxJitter: 50 * time.Millisecond},
+			attempts: 5, // 计算值 32s + 抖动，全部被 60s 建议覆盖
+			hint:     60 * time.Second,
+			hasHint:  true,
+			want:     60 * time.Second,
+		},
+		{
+			name:     "Retry-After: 0 = 立即重试（与「未携带」可区分）",
+			p:        retryPolicy{initDelay: time.Second},
+			attempts: 5,
+			hint:     0,
+			hasHint:  true,
+			want:     0,
+		},
+		{
+			name:     "建议同样受 maxDelay 封顶（#234）",
+			p:        retryPolicy{initDelay: time.Second, maxDelay: 10 * time.Second},
+			attempts: 5,
+			hint:     60 * time.Second,
+			hasHint:  true,
+			want:     10 * time.Second,
+		},
+		{
+			name:     "hasHint=false 时 hint 被忽略",
+			p:        retryPolicy{initDelay: 100 * time.Millisecond},
+			attempts: 1,
+			hint:     60 * time.Second,
+			hasHint:  false,
+			want:     200 * time.Millisecond,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.p.delay(tc.attempts); got != tc.want {
-				t.Fatalf("delay(%d) = %v, want %v", tc.attempts, got, tc.want)
+			if got := tc.p.delay(tc.attempts, tc.hint, tc.hasHint); got != tc.want {
+				t.Fatalf("delay(%d, hint=%v, hasHint=%v) = %v, want %v",
+					tc.attempts, tc.hint, tc.hasHint, got, tc.want)
 			}
 		})
 	}
@@ -81,7 +117,7 @@ func TestRetryPolicy_DelayJitterBounds(t *testing.T) {
 	p := retryPolicy{initDelay: 100 * time.Millisecond, maxJitter: 50 * time.Millisecond}
 	lo, hi := 200*time.Millisecond, 250*time.Millisecond
 	for i := 0; i < 500; i++ {
-		got := p.delay(1)
+		got := p.delay(1, 0, false)
 		if got < lo || got >= hi {
 			t.Fatalf("delay(1) = %v, want [%v, %v)", got, lo, hi)
 		}
@@ -89,7 +125,7 @@ func TestRetryPolicy_DelayJitterBounds(t *testing.T) {
 	// 抖动封顶同样作用于含抖动的结果
 	capped := retryPolicy{initDelay: 100 * time.Millisecond, maxJitter: 50 * time.Millisecond, maxDelay: 210 * time.Millisecond}
 	for i := 0; i < 500; i++ {
-		if got := capped.delay(1); got > 210*time.Millisecond {
+		if got := capped.delay(1, 0, false); got > 210*time.Millisecond {
 			t.Fatalf("delay(1) = %v, want <= 210ms（maxDelay 封顶含抖动）", got)
 		}
 	}
