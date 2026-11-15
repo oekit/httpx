@@ -6,10 +6,10 @@ require (
 	github.com/cloudwego/hertz v0.10.6
 	github.com/oekit/concurrency v0.37.0
 	github.com/oekit/logx v0.11.0
-	github.com/oekit/metrics v0.4.0
+	github.com/oekit/metrics v0.4.1
 	github.com/oekit/pkg v0.50.0
-	github.com/oekit/registry v0.6.0
-	github.com/oekit/tracing v0.4.5
+	github.com/oekit/registry v0.6.1
+	github.com/oekit/tracing v0.4.6
 	github.com/prometheus/client_golang v1.25.0
 	github.com/sony/gobreaker v1.0.0
 	go.opentelemetry.io/otel v1.47.0
