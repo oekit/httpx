@@ -78,6 +78,9 @@ func WithBaseURL(u string) ClientOption {
 //     阶段真实受控）；WithDialFunc 注入的自定义 DialFunc 签名（func(addr)）
 //     装不下预算，建连预算由拨号器自身决定；
 //   - 流式响应（SSE/代理长连接/WS 升级）不能用整段读超时掐流，用 WithStream；
+//   - 指标联动（#238）：WithMetrics 的 request_duration_seconds 缺省桶上界是
+//     30s（与缺省读超时对齐）。把超时调得**更长**时 >30s 的时延会落 +Inf 桶、
+//     长尾在直方图上不可分辨——桶上界应 ≥ 本选项的超时上限；
 //   - d <= 0 是构造期非法值（#169）：hertz 直传 net.DialTimeout 后按 net 包
 //     契约「negative or zero means no timeout」解析，负值/零把拨号与读双双
 //     退化为无限等待，与本选项「总预算有上界」的承诺相反——NewClient 构造期

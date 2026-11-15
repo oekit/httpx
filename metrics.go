@@ -13,6 +13,18 @@ import (
 // 所有未指定 target 的请求会聚到同一 series，避免高基数标签爆炸。
 const defaultTargetLabel = "default"
 
+// defaultDurationBuckets 是 request_duration_seconds 的桶边界（#238）：
+// prom.DefBuckets（上界 10s）+ 20s + 30s，上界对齐**缺省读超时 30s**
+// （NewClient 的 client.WithClientReadTimeout(30 * time.Second)）。
+//
+// 桶上界必须 ≥ 客户端超时上限：缺省桶最大有限值只有 10s，而缺省超时面是 30s，
+// 10s~30s 的慢请求与超时全部落 +Inf ⇒ histogram_quantile 算出的 P95/P99 恒
+// ≤10s，长尾被压成一个不可分辨的点、SLO（如 P99 ≤ 20s）既证不了也证伪不了
+// （30s 的超时面配 10s 的桶等于把指标可用量程砍掉 2/3）。
+var defaultDurationBuckets = []float64{
+	0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 30,
+}
+
 // clientMetrics 管理 HTTP 客户端的 Prometheus 指标。
 //
 // 标签约定（与 PLATFORM_CONTRACT.md 5.3 一致）：
@@ -22,6 +34,10 @@ const defaultTargetLabel = "default"
 //   - status_code: HTTP 状态码
 //
 // 禁止使用 host/IP/port/path 等高基数来源作为 label。
+//
+// 时延直方图桶（#238）：缺省桶见 defaultDurationBuckets（上界 30s ≥ 缺省读
+// 超时）。桶上界应 ≥ 调用方的客户端超时上限——超时更长时 >30s 的时延仍会落
+// +Inf，长尾观测同样失真（经 WithHertzOption 调长超时的调用方须知悉）。
 type clientMetrics struct {
 	requestsTotal    *prom.CounterVec
 	requestDuration  *prom.HistogramVec
@@ -63,7 +79,8 @@ func newClientMetrics(reg prom.Registerer, namespace string) *clientMetrics {
 		Name:      "request_duration_seconds",
 		Namespace: namespace,
 		Help:      "Duration of outgoing HTTP requests in seconds.",
-		Buckets:   prom.DefBuckets,
+		// #238：不用 prom.DefBuckets（上界 10s < 缺省读超时 30s，长尾全进 +Inf）
+		Buckets: defaultDurationBuckets,
 	}, []string{"service", "target", "method"}), metrics.WithReuseOwner("httpx"))
 	m.requestsInFlight = metrics.RegisterReuse(reg, prom.NewGaugeVec(prom.GaugeOpts{
 		Name:      "requests_in_flight",
