@@ -373,6 +373,81 @@ func TestExecSkeleton_LbDoneCalledOnBuildBodyError(t *testing.T) {
 	}
 }
 
+// TestExecSkeleton_LbDoneCalledOnBuildBodyError_AllEntries 回归（#239）：
+// resolveEndpoint 之后的**每一条**构造期失败路径都必须回写 lbDone——#204 先修
+// 了 DoCodec 一处，本测试把 issue 点名的入口（DoCodec/DoRaw/DoDetail/
+// UploadFile）全部钉住：选点已发生却拿不到 DoneInfo 的话，P2C/加权选择器的
+// 失败样本（EWMA、失败节点计数、健康度衰减）系统性缺失，且此路径可随同一请求
+// 重试反复触发、反馈缺口非单次噪声。
+//
+// UploadBytes 的 buildBody（buildMultipartFileBytes，bytes.Buffer 写入）在
+// 现实里不可失败，故不单列用例——它与 UploadFile 共用 exec 的同一段回写代码。
+func TestExecSkeleton_LbDoneCalledOnBuildBodyError_AllEntries(t *testing.T) {
+	ctx := context.Background()
+	srvURL, reqs := jsonServer(t, http.StatusOK, `{}`)
+	badBody := map[string]any{"ch": make(chan int)} // json.Marshal 必失败
+
+	cases := []struct {
+		name    string
+		call    func(*Client) error
+		wantErr string
+	}{
+		{
+			name: "DoCodec",
+			call: func(c *Client) error {
+				return c.DoCodec(ctx, codec.DefaultName, http.MethodPost, "/x", badBody, nil)
+			},
+			wantErr: "marshal body",
+		},
+		{
+			name: "DoRaw",
+			call: func(c *Client) error {
+				_, err := c.DoRaw(ctx, http.MethodPost, "/x", badBody)
+				return err
+			},
+			wantErr: "marshal body",
+		},
+		{
+			name: "DoDetail",
+			call: func(c *Client) error {
+				_, _, err := c.DoDetail(ctx, http.MethodPost, "/x", badBody)
+				return err
+			},
+			wantErr: "marshal body",
+		},
+		{
+			name: "UploadFile",
+			call: func(c *Client) error {
+				return c.UploadFile(ctx, "/x", "/nonexistent/httpx-no-such-file-239", "file", nil, nil)
+			},
+			wantErr: "read upload file",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, rs := newRecordingClient(t, srvURL)
+			t.Cleanup(c.Close)
+			err := tc.call(c)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err = %v, want %q", err, tc.wantErr)
+			}
+			got := rs.lastErr()
+			if got == nil || errors.Is(got, errNoDoneRecorded) {
+				t.Fatalf("构造期失败必须回写 lbDone（#239），got %v", got)
+			}
+			if !strings.Contains(got.Error(), tc.wantErr) {
+				t.Errorf("DoneInfo.Err = %v, want 携带 %q 的构造期错误本身", got, tc.wantErr)
+			}
+			select {
+			case <-reqs:
+				t.Fatal("构造期失败不得触网")
+			default:
+			}
+		})
+	}
+}
+
 // TestExecSkeleton_PriorityRejectionSentinel 回归（#165）：队列拒绝错误
 // 必须可经哨兵 ErrPriorityUnavailable 与 ctx 取消原因双路 errors.Is 分流
 // （修复前两者都只埋在文案里，调用方只能 strings.Contains）。
