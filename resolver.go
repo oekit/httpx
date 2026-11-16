@@ -12,6 +12,7 @@ import (
 	"github.com/oekit/concurrency/async"
 	"github.com/oekit/httpx/loadbalance"
 	"github.com/oekit/logx"
+	errors "github.com/oekit/pkg/errors"
 	"github.com/oekit/registry"
 )
 
@@ -283,10 +284,10 @@ func NewNNSResolver(serviceName string, nnsClient NNSClient) *NNSResolver {
 func (r *NNSResolver) ResolveInstances(ctx context.Context) ([]registry.Instance, error) {
 	instances, err := r.nnsClient.GetInstances(ctx, r.serviceName)
 	if err != nil {
-		return nil, fmt.Errorf("nns resolve %s: %w", r.serviceName, err)
+		return nil, errors.Wrapf(err, "nns resolve %s", r.serviceName)
 	}
 	if len(instances) == 0 {
-		return nil, fmt.Errorf("nns resolve %s: no instances available", r.serviceName)
+		return nil, errors.Newf("nns resolve %s: no instances available", r.serviceName)
 	}
 	return instances, nil
 }
@@ -318,7 +319,7 @@ func NewStaticResolver(endpoints []string) *StaticResolver {
 // Resolve 返回静态配置的 endpoint 列表。
 func (r *StaticResolver) Resolve(ctx context.Context) ([]string, error) {
 	if len(r.endpoints) == 0 {
-		return nil, fmt.Errorf("static resolver: no endpoints configured")
+		return nil, errors.New("static resolver: no endpoints configured")
 	}
 	return r.endpoints, nil
 }

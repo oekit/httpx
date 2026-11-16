@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/cloudwego/hertz/pkg/protocol"
+	errors "github.com/oekit/pkg/errors"
 )
 
 // net/http 桥接层（#8）：把 httpx 的熔断/重试/指标/链路透传装进标准库
@@ -108,7 +109,7 @@ func (rt *roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req.Body != nil {
 		b, err := io.ReadAll(req.Body)
 		if err != nil {
-			return nil, fmt.Errorf("%s: read request body: %w", c.service, err)
+			return nil, errors.Wrapf(err, "%s: read request body", c.service)
 		}
 		body = b
 	}

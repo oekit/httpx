@@ -2,7 +2,6 @@ package httpx
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 
 	"sync"
@@ -16,6 +15,7 @@ import (
 	"github.com/oekit/httpx/loadbalance"
 	"github.com/oekit/logx"
 	"github.com/oekit/metrics/resilience"
+	errors "github.com/oekit/pkg/errors"
 )
 
 // Client 是封装了 Hertz HTTP 客户端的高层 HTTP 调用器，支持服务发现、负载均衡、熔断和指标。
@@ -101,7 +101,7 @@ func NewClient(service string, opts ...ClientOption) (*Client, error) {
 
 	hc, err := client.NewClient(hzOpts...)
 	if err != nil {
-		return nil, fmt.Errorf("httpx: client.NewClient with defaults failed: %w", err)
+		return nil, errors.Wrapf(err, "httpx: client.NewClient with defaults failed")
 	}
 	c.client = hc
 

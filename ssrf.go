@@ -3,13 +3,13 @@ package httpx
 import (
 	"context"
 	"crypto/tls"
-	"fmt"
 	"net"
 	"time"
 
 	"github.com/cloudwego/hertz/pkg/network"
 	hzdialer "github.com/cloudwego/hertz/pkg/network/dialer"
 	"github.com/cloudwego/hertz/pkg/network/standard"
+	errors "github.com/oekit/pkg/errors"
 	pkgurlguard "github.com/oekit/pkg/urlguard"
 )
 
@@ -130,7 +130,7 @@ func newGuardedDial(g *pkgurlguard.Guard, gerr error, next network.DialFunc, bas
 		hc, ok := conn.(network.Conn)
 		if !ok {
 			_ = conn.Close()
-			return nil, fmt.Errorf("urlguard: dial %q: 连接类型 %T 不是 hertz network.Conn", addr, conn)
+			return nil, errors.Newf("urlguard: dial %q: 连接类型 %T 不是 hertz network.Conn", addr, conn)
 		}
 		return hc, nil
 	}
