@@ -15,6 +15,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/protocol"
 	"github.com/oekit/httpx/codec"
 	"github.com/oekit/httpx/loadbalance"
+	errors "github.com/oekit/pkg/errors"
 )
 
 // GetJSON 发送 GET 请求并将响应反序列化到 out。
@@ -68,7 +69,7 @@ func (c *Client) doWithLBDone(ctx context.Context, req *protocol.Request, resp *
 		lbDone(ctx, loadbalance.DoneInfo{Err: err})
 	}
 	if err != nil {
-		return fmt.Errorf("%s: %s: %w", c.service, failVerb, err)
+		return errors.Wrapf(err, "%s: %s", c.service, failVerb)
 	}
 	return nil
 }
@@ -144,7 +145,7 @@ func marshalJSONBody(c *Client, body any) func() ([]byte, string, error) {
 		}
 		data, err := json.Marshal(body)
 		if err != nil {
-			return nil, "", fmt.Errorf("%s: marshal body: %w", c.service, err)
+			return nil, "", errors.Wrapf(err, "%s: marshal body", c.service)
 		}
 		return data, "application/json", nil
 	}
@@ -174,7 +175,7 @@ func (c *Client) DoCodec(ctx context.Context, codecName, method, path string, bo
 			}
 			data, err := cd.Marshal(body)
 			if err != nil {
-				return nil, "", fmt.Errorf("%s: marshal body: %w", c.service, err)
+				return nil, "", errors.Wrapf(err, "%s: marshal body", c.service)
 			}
 			return data, cd.ContentType(), nil
 		}, out, cd)
@@ -215,11 +216,11 @@ func (c *Client) UploadFile(ctx context.Context, path, filePath, fieldName strin
 			// 且 part filename 是完整本地路径（泄漏服务器目录结构）。
 			data, err := os.ReadFile(filePath)
 			if err != nil {
-				return nil, "", fmt.Errorf("%s: read upload file: %w", c.service, err)
+				return nil, "", errors.Wrapf(err, "%s: read upload file", c.service)
 			}
 			body, contentType, err := buildMultipartFileBytes(fieldName, filepath.Base(filePath), data, extraFields)
 			if err != nil {
-				return nil, "", fmt.Errorf("%s: build multipart: %w", c.service, err)
+				return nil, "", errors.Wrapf(err, "%s: build multipart", c.service)
 			}
 			return body, contentType, nil
 		}, out, nil)
@@ -232,7 +233,7 @@ func (c *Client) UploadBytes(ctx context.Context, path string, data []byte, fiel
 		func() ([]byte, string, error) {
 			body, contentType, err := buildMultipartFileBytes(fieldName, fileName, data, extraFields)
 			if err != nil {
-				return nil, "", fmt.Errorf("%s: build multipart: %w", c.service, err)
+				return nil, "", errors.Wrapf(err, "%s: build multipart", c.service)
 			}
 			return body, contentType, nil
 		}, out, nil)
@@ -270,7 +271,7 @@ func (c *Client) handleResponse(resp *protocol.Response, action string, out any,
 				decodeErr = json.Unmarshal(resp.Body(), out)
 			}
 			if decodeErr != nil {
-				return fmt.Errorf("%s: unmarshal response: %w", c.service, decodeErr)
+				return errors.Wrapf(decodeErr, "%s: unmarshal response", c.service)
 			}
 		}
 		return nil

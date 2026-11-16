@@ -19,6 +19,7 @@ import (
 	retryhttpx "github.com/oekit/concurrency/retry/httpx"
 	"github.com/oekit/httpx/loadbalance"
 	"github.com/oekit/metrics/resilience"
+	pkgerrors "github.com/oekit/pkg/errors"
 	prom "github.com/prometheus/client_golang/prometheus"
 	"github.com/sony/gobreaker"
 	"go.opentelemetry.io/otel"
@@ -55,7 +56,7 @@ func WithBaseURL(u string) ClientOption {
 		}
 		parsed, err := url.Parse(u)
 		if err != nil || parsed.Host == "" {
-			c.setConstructErr(fmt.Errorf(
+			c.setConstructErr(pkgerrors.Newf(
 				"httpx: WithBaseURL: 非法 baseURL %q（url.Parse 失败或缺少 host；应为 scheme://host[:port] 形态，如 http://user-service:8080）", u))
 			return
 		}
@@ -90,7 +91,7 @@ func WithBaseURL(u string) ClientOption {
 func WithTimeout(d time.Duration) ClientOption {
 	return func(c *Client) {
 		if d <= 0 {
-			c.setConstructErr(fmt.Errorf(
+			c.setConstructErr(pkgerrors.Newf(
 				"httpx: WithTimeout: d must be > 0, got %s——负值/零会让拨号与读超时双双退化为无限等待（net 包契约 negative or zero means no timeout）；流式等需要关闭读超时的场景用 WithStream，彻底不限经 WithHertzOption(client.WithDialTimeout(0), client.WithClientReadTimeout(0)) 显式声明", d))
 			return
 		}
@@ -445,13 +446,13 @@ func WithRetryConfig(maxAttempts uint, initDelay, maxDelay, maxJitter time.Durat
 		// 构造期校验（#236）：ClientOption 无法返回错误，先落 constructErr，
 		// NewClient 汇总显式返回（与 #83/#169 同口径）。
 		if maxAttempts > maxRetryAttempts {
-			c.setConstructErr(fmt.Errorf(
+			c.setConstructErr(pkgerrors.Newf(
 				"httpx: WithRetryConfig: maxAttempts=%d 超出上限 %d——退避档位按 initDelay<<attempts 指数增长，无上限的尝试次数会把单请求退避推到分钟级乃至溢出（需要更长总窗口请调大 initDelay/maxDelay 或显式拆分重试预算）",
 				maxAttempts, maxRetryAttempts))
 			return
 		}
 		if maxDelay < 0 {
-			c.setConstructErr(fmt.Errorf(
+			c.setConstructErr(pkgerrors.Newf(
 				"httpx: WithRetryConfig: maxDelay=%s 不能为负——负值既不是「封顶」也不是文档化的「0 = 不封顶」，只会被静默当成不封顶放行；需要封顶请传正值，明确不封顶请传 0",
 				maxDelay))
 			return
