@@ -1,3 +1,7 @@
+## [v0.12.2] — 2026-11-16
+
+- refactor: fmt.Errorf → oekit/pkg/errors 三形态对位替换（#520 替换波）+ 依赖地板抬至 pkg v0.52.0。文案逐字节同形（测试断言零修改），多 %w/%w 居中/哨兵前置形态按仓规保留
+
 ## [v0.12.1] — 2026-11-15
 
 - 默认重试谓词接矩阵单源（#234）：状态码面改 concurrency/retry/httpx.Retryable（429+5xx，受幂等门），传输层错误复用 IsTransportRetryable；重试等待优先读本次响应 Retry-After（秒数/HTTP-date 单源解析），maxDelay 仍封顶
