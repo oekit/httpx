@@ -9,6 +9,8 @@ import (
 	"github.com/cloudwego/hertz/pkg/app/client"
 	"github.com/cloudwego/hertz/pkg/protocol"
 	retryhttpx "github.com/oekit/concurrency/retry/httpx"
+	"github.com/oekit/pkg/contextx"
+	"github.com/oekit/pkg/timex"
 )
 
 // maxRetryAttempts 是 WithRetryConfig 允许的 maxAttempts 上限（#236）。
@@ -104,23 +106,17 @@ func (p *retryPolicy) backoff(attempts uint) time.Duration {
 // 64s；无封顶时更长），单请求总时长被放大到分钟级，与 WithTimeout/WithStream
 // 反复强调的「总时长预算由调用方经 ctx 控制」直接冲突。
 //
-// 这里用 select{timer, ctx.Done()}：取消立即返回，随后 hertz 循环顶部的
-// ctx.Done 分支以 ctx.Err() 结束本次请求（谓词仍返回「要重试」——返回 false
-// 会让已取消的请求以最后一轮的响应/传输错误收尾，调用方拿不到取消原因）。
-// d <= 0 时 timer 立即到期，语义仍是「不等待但让取消可见」。
-//
-// 计时走 time.NewTimer：testing/synctest 假时钟可完全接管，确定性时序测试
-// 不睡真时间（见 retry_backoff_test.go）。
+// 可中断 sleep 已单源下沉 timex.SleepContext（#530，语义与本函数原实现逐字
+// 一致：d <= 0 直通不查取消、ctx 取消/超时立即返回 ctx.Err()、计时走
+// time.NewTimer——testing/synctest 假时钟可完全接管，确定性时序测试不睡真
+// 时间，见 retry_backoff_test.go），此处薄委托。返回的 ctx.Err() 不需要：
+// 取消后 hertz 循环顶部的 ctx.Done 分支以 ctx.Err() 结束本次请求（谓词仍
+// 返回「要重试」——返回 false 会让已取消的请求以最后一轮的响应/传输错误
+// 收尾，调用方拿不到取消原因）。
+// nil-ctx 兜底经 contextx.OrBackground 归一（#529 单源；SleepContext 内部
+// 同口径兜底，显式归一保持原貌）。
 func waitRetry(ctx context.Context, d time.Duration) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-timer.C:
-	case <-ctx.Done():
-	}
+	_ = timex.SleepContext(contextx.OrBackground(ctx), d)
 }
 
 // retryScope 承载单次请求在退避期需要、而 hertz 重试谓词签名
