@@ -9,7 +9,7 @@ require (
 	github.com/oekit/metrics v0.4.2
 	github.com/oekit/pkg v0.53.0
 	github.com/oekit/registry v0.7.0
-	github.com/oekit/tracing v0.4.7
+	github.com/oekit/tracing v0.4.8
 	github.com/prometheus/client_golang v1.25.0
 	github.com/sony/gobreaker v1.0.0
 	go.opentelemetry.io/otel v1.47.0
