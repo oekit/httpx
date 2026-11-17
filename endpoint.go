@@ -2,10 +2,10 @@ package httpx
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	"github.com/oekit/httpx/loadbalance"
+	"github.com/oekit/pkg/pathx"
 )
 
 func (c *Client) newEndpointManager(resolver ServiceResolver, defaultInterval time.Duration) *EndpointManager {
@@ -20,12 +20,13 @@ func (c *Client) newEndpointManager(resolver ServiceResolver, defaultInterval ti
 // 分隔符：base 去尾 "/"、path 补前导 "/"（#112）。修复前直接相加——path 缺
 // 前导 "/" 时 host 被吃进 path（baseURL="http://h:8080" + "api/x" ⇒
 // "http://h:8080api/x"，拨号报误导性的 unknown port）；静态端点同分支同修。
+//
+// 拼接规则已单源下沉 pathx.JoinURL（#532，#112 语义一致），此处薄委托；
+// #112 的回归测试（TestJoinEndpoint）与调用点仍锚定本名称。path 为空时
+// JoinURL 返回 base 原样（原实现会补尾 "/"）——空请求 URI 在 HTTP 层本就
+// 归一为 "/"，线上请求形态不变。
 func joinEndpoint(base, path string) string {
-	base = strings.TrimRight(base, "/")
-	if !strings.HasPrefix(path, "/") {
-		path = "/" + path
-	}
-	return base + path
+	return pathx.JoinURL(base, path)
 }
 
 // resolveEndpoint 解析请求目标地址，返回完整地址前缀与负载均衡结果回写句柄。
