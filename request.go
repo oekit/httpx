@@ -16,6 +16,7 @@ import (
 	"github.com/oekit/httpx/codec"
 	"github.com/oekit/httpx/loadbalance"
 	errors "github.com/oekit/pkg/errors"
+	"github.com/oekit/pkg/stringx"
 )
 
 // GetJSON 发送 GET 请求并将响应反序列化到 out。
@@ -276,10 +277,12 @@ func (c *Client) handleResponse(resp *protocol.Response, action string, out any,
 		}
 		return nil
 	}
-	msg := string(resp.Body())
-	if len(msg) > 500 {
-		msg = msg[:500]
-	}
+	// 错误体摘要按 rune 边界截断（#253）：此前 msg[:500] 按字节下刀，中文
+	// /emoji 等多字节 UTF-8 错误体恰好在第 500 字节被腰斩——半个字符落进
+	// ServiceError.Message 成为非法 UTF-8，下游 JSON 序列化/日志采集再编码
+	// 即乱码。stringx.FirstN 按字符边界截断；不传省略号——错误摘要要的是
+	// 原文前缀，不要装饰。
+	msg := stringx.FirstN(string(resp.Body()), 500)
 	return &ServiceError{
 		Service: c.service,
 		Action:  action,
