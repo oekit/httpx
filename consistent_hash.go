@@ -3,13 +3,13 @@ package httpx
 import (
 	"cmp"
 	"context"
-	"hash/fnv"
 	"slices"
 	"sort"
 	"strconv"
 	"sync"
 
 	"github.com/oekit/httpx/loadbalance"
+	pkgencoding "github.com/oekit/pkg/encoding"
 )
 
 // defaultConsistentReplicas 每个节点在哈希环上的默认虚拟副本数。
@@ -177,9 +177,10 @@ func buildConsistentRing(nodes []loadbalance.Node, baseReplicas int, hash func([
 	return ring
 }
 
-// defaultConsistentHash FNV-1a 64（标准库，零依赖）。
+// defaultConsistentHash FNV-1a 64（#254 单源化：此前 stdlib fnv.New64a 与
+// pkg/encoding.Fnv1a64 双实现并存，现统一走 pkg 微工具集单点实现——与
+// stdlib 输出逐字节等价，等价性由 TestDefaultConsistentHash_MatchesStdlibFnv1a
+// 以 stdlib 对照实现钉住，防止算法/字节序/种子漂移重排存量环布局）。
 func defaultConsistentHash(data []byte) uint64 {
-	h := fnv.New64a()
-	h.Write(data)
-	return h.Sum64()
+	return pkgencoding.Fnv1a64(data)
 }
