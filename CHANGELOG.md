@@ -1,3 +1,9 @@
+## [v0.12.3] — 2026-11-18
+
+- 非 2xx 错误体截断改 stringx.FirstN rune 安全,不再腰斩 UTF-8(#253);consistent hash FNV-1a 收敛 pkg/encoding.Fnv1a64 单源(#254);joinEndpoint/waitRetry 薄委托 pathx.JoinURL/timex.SleepContext(pkg v0.53.0 原语)
+
+关联问题单：httpx#253、httpx#254。
+
 ## [v0.12.2] — 2026-11-16
 
 - refactor: fmt.Errorf → oekit/pkg/errors 三形态对位替换（#520 替换波）+ 依赖地板抬至 pkg v0.52.0。文案逐字节同形（测试断言零修改），多 %w/%w 居中/哨兵前置形态按仓规保留
