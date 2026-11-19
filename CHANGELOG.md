@@ -1,3 +1,8 @@
+## [v0.13.0] — 2026-11-20
+
+- fix(resolver): SelectorNodes 权重闭包接入 sdbridge.WeightOrDefault——weight<=0 归一 DefaultInstanceWeight=10，与 kitex/hertz 消费面同单源；此前 weightedSelector 把 <=0 视为 1，混合栈同数据流量分布分叉（#266）
+⚠ 行为面：注册数据权重漏配（<=0）时本仓消费面有效权重由 1 变 10（对齐 kitex/hertz），监控流量分布的看板口径需同步
+
 ## [v0.12.3] — 2026-11-18
 
 - 非 2xx 错误体截断改 stringx.FirstN rune 安全,不再腰斩 UTF-8(#253);consistent hash FNV-1a 收敛 pkg/encoding.Fnv1a64 单源(#254);joinEndpoint/waitRetry 薄委托 pathx.JoinURL/timex.SleepContext(pkg v0.53.0 原语)
