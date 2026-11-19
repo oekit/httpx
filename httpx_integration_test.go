@@ -3,6 +3,7 @@ package httpx
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -76,7 +77,7 @@ func TestGetJSON_4xxError(t *testing.T) {
 		t.Fatal("expected error for 404, got nil")
 	}
 	var svcErr *ServiceError
-	if !errAs(err, &svcErr) {
+	if !errors.As(err, &svcErr) {
 		t.Fatalf("expected *ServiceError, got %T: %v", err, err)
 	}
 	if svcErr.Code != 404 {
@@ -94,7 +95,7 @@ func TestGetJSON_5xxError(t *testing.T) {
 		t.Fatal("expected error for 500, got nil")
 	}
 	var svcErr *ServiceError
-	if !errAs(err, &svcErr) {
+	if !errors.As(err, &svcErr) {
 		t.Fatalf("expected *ServiceError, got %T", err)
 	}
 	if svcErr.Code != 500 {
@@ -157,7 +158,7 @@ func TestPostJSON_5xxError(t *testing.T) {
 		t.Fatal("expected error, got nil")
 	}
 	var svcErr *ServiceError
-	if !errAs(err, &svcErr) {
+	if !errors.As(err, &svcErr) {
 		t.Fatalf("expected *ServiceError, got %T", err)
 	}
 	if svcErr.Code != 503 {
@@ -381,7 +382,7 @@ func TestCircuitBreaker_OpensOnConsecutiveFailures(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from open circuit, got nil")
 	}
-	if !errIs(err, ErrCircuitOpen) {
+	if !errors.Is(err, ErrCircuitOpen) {
 		t.Errorf("expected ErrCircuitOpen, got %v", err)
 	}
 	if got := count.Load(); got != hitsBefore {
@@ -458,8 +459,13 @@ func TestResolveEndpoint_PicksAndConcatenates(t *testing.T) {
 		_, _ = io.WriteString(w, `{}`)
 	}))
 	t.Cleanup(srv.Close)
-	host, port := parseHostPort(srv.URL)
-	endpoint := "http://" + host + ":" + intToStr(port)
+	// 调用点只喂 httptest server 的 "http://127.0.0.1:port" 形态（#267）：
+	// stdlib url.Parse 替代手写 parseHostPort，行为等价
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("parse httptest URL %q: %v", srv.URL, err)
+	}
+	endpoint := "http://" + u.Hostname() + ":" + u.Port()
 	c := MustNewClient("test", WithEndpoints(endpoint))
 	defer c.Close()
 	if err := c.GetJSON(context.Background(), "/api/v1/items", nil); err != nil {
@@ -558,83 +564,6 @@ func TestNNSResolver_EmptyInstances(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for empty instances, got nil")
 	}
-}
-
-func errAs(err error, target any) bool {
-	for {
-		if err == nil {
-			return false
-		}
-		switch v := target.(type) {
-		case **ServiceError:
-			if se, ok := err.(*ServiceError); ok {
-				*v = se
-				return true
-			}
-		}
-		type unwrapper interface{ Unwrap() error }
-		u, ok := err.(unwrapper)
-		if !ok {
-			return false
-		}
-		err = u.Unwrap()
-	}
-}
-
-func errIs(err, target error) bool {
-	for {
-		if err == target {
-			return true
-		}
-		if err == nil {
-			return false
-		}
-		type unwrapper interface{ Unwrap() error }
-		u, ok := err.(unwrapper)
-		if !ok {
-			return false
-		}
-		err = u.Unwrap()
-	}
-}
-
-func parseHostPort(rawURL string) (string, int) {
-	const prefix = "http://"
-	if len(rawURL) < len(prefix) || rawURL[:len(prefix)] != prefix {
-		return rawURL, 0
-	}
-	rest := rawURL[len(prefix):]
-	colon := -1
-	for i := 0; i < len(rest); i++ {
-		if rest[i] == ':' {
-			colon = i
-			break
-		}
-	}
-	if colon < 0 {
-		return rest, 0
-	}
-	port := 0
-	for i := colon + 1; i < len(rest); i++ {
-		ch := rest[i]
-		if ch < '0' || ch > '9' {
-			break
-		}
-		port = port*10 + int(ch-'0')
-	}
-	return rest[:colon], port
-}
-
-func intToStr(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	digits := ""
-	for n > 0 {
-		digits = string(rune('0'+n%10)) + digits
-		n /= 10
-	}
-	return digits
 }
 
 type stubNNSClient struct {
