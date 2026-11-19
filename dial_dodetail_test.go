@@ -106,7 +106,7 @@ func TestDoDetail_ErrorStillReturnsStatusAndBody(t *testing.T) {
 		t.Errorf("expected raw body on error, got %s", body)
 	}
 	var svcErr *ServiceError
-	if !errAs(err, &svcErr) {
+	if !errors.As(err, &svcErr) {
 		t.Fatalf("expected *ServiceError, got %T: %v", err, err)
 	}
 	if svcErr.Code != http.StatusBadRequest {

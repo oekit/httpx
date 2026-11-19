@@ -175,7 +175,7 @@ func TestDoRaw_ErrorReturnsNilBody(t *testing.T) {
 		t.Errorf("DoRaw on error must return nil body, got %q", raw)
 	}
 	var svcErr *ServiceError
-	if !errAs(err, &svcErr) || svcErr.Code != 500 {
+	if !errors.As(err, &svcErr) || svcErr.Code != 500 {
 		t.Fatalf("expected *ServiceError code 500, got %T: %v", err, err)
 	}
 
@@ -235,7 +235,7 @@ func TestUploadBytes_FormShapeAndErrorAction(t *testing.T) {
 	defer cErr.Close()
 	err := cErr.UploadBytes(context.Background(), "/upload", []byte("x"), "upload", "a.txt", nil, nil)
 	var svcErr *ServiceError
-	if !errAs(err, &svcErr) || svcErr.Action != "UPLOAD /upload" || svcErr.Code != 403 {
+	if !errors.As(err, &svcErr) || svcErr.Action != "UPLOAD /upload" || svcErr.Code != 403 {
 		t.Fatalf("expected ServiceError{Action: UPLOAD /upload, Code: 403}, got %T: %v", err, err)
 	}
 }
