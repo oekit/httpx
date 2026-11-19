@@ -115,3 +115,25 @@ func TestSelectorNodes_MetadataMapping(t *testing.T) {
 		t.Fatalf("metadata not propagated: %+v", nodes[0].Metadata())
 	}
 }
+
+// TestSelectorNodes_WeightNormalize 钉住权重归一（#266）：SelectorNodes 的
+// 权重闭包经 sdbridge.WeightOrDefault 三级回填——正数原值透传，0/负数回填
+// registry.DefaultInstanceWeight，与 kitex/hertz convert 消费面同单源。
+// 修复前 raw Weight 直传，weightedSelector 把 <=0 视为 1，混合技术栈下
+// 流量分布不一致（kitex/hertz 每实例 10 份、httpx 每实例 1 份）。
+func TestSelectorNodes_WeightNormalize(t *testing.T) {
+	insts := []registry.Instance{
+		{Service: "svc", IP: "10.0.0.1", Port: 8080, Weight: 7},
+		{Service: "svc", IP: "10.0.0.2", Port: 8080},
+		{Service: "svc", IP: "10.0.0.3", Port: 8080, Weight: -3},
+	}
+	nodes := SelectorNodes(insts)
+	// 三档断言：正数透传；零值（漏配典型形态，registry.Instance 零值写法
+	// 不带 Weight）与负数均回填 DefaultInstanceWeight。
+	want := []float64{7, registry.DefaultInstanceWeight, registry.DefaultInstanceWeight}
+	for i, w := range want {
+		if got := nodes[i].Weight(); got != w {
+			t.Errorf("node[%d].Weight() = %v, want %v", i, got, w)
+		}
+	}
+}
