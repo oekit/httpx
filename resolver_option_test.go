@@ -92,6 +92,68 @@ func TestOptionOrder_RefreshIntervalBeforeResolver(t *testing.T) {
 		resolver.calls.Load())
 }
 
+// TestWithRefreshInterval_RejectsNonPositive_OrderIndependent 回归（#276）：
+// WithRefreshInterval 不校验 d——0/负值排在 WithServiceResolver 之后时用
+// newEndpointManager(old.resolver, d) 替换 manager，而 NewEndpointManager
+// 仅在 refreshInterval>0 时启动刷新循环（动态发现彻底停摆，首次刷新也不
+// 发生）；排在解析器之前又回落 30s 缺省。修复后构造期拒绝 d<=0，两种
+// option 顺序同报错；正值两种顺序都必须真实启动刷新循环。
+func TestWithRefreshInterval_RejectsNonPositive_OrderIndependent(t *testing.T) {
+	orders := []struct {
+		name string
+		opts func(time.Duration) []ClientOption
+	}{
+		{"解析器之前", func(d time.Duration) []ClientOption {
+			return []ClientOption{WithRefreshInterval(d), WithServiceResolver(&countingResolver{})}
+		}},
+		{"解析器之后", func(d time.Duration) []ClientOption {
+			return []ClientOption{WithServiceResolver(&countingResolver{}), WithRefreshInterval(d)}
+		}},
+	}
+
+	// 非法值：两种顺序都必须构造期报错，错误信息点明刷新间隔
+	for _, d := range []time.Duration{0, -time.Second} {
+		for _, order := range orders {
+			c, err := NewClient("svc-refresh-invalid", order.opts(d)...)
+			if err == nil {
+				c.Close()
+				t.Fatalf("WithRefreshInterval(%s) 排在%s：期望构造期报错，got nil", d, order.name)
+			}
+			if c != nil {
+				t.Errorf("WithRefreshInterval(%s) 排在%s：期望错误路径返回 nil client，got %v", d, order.name, c)
+			}
+			if !strings.Contains(err.Error(), "刷新间隔") {
+				t.Errorf("错误信息应指明刷新间隔非法，got %q", err.Error())
+			}
+		}
+	}
+
+	// 正值：两种顺序都必须启动刷新循环（>= 3 次解析），不得随顺序漂移
+	for _, order := range orders {
+		resolver := &countingResolver{}
+		var opts []ClientOption
+		if order.name == "解析器之前" {
+			opts = []ClientOption{WithRefreshInterval(10 * time.Millisecond), WithServiceResolver(resolver)}
+		} else {
+			opts = []ClientOption{WithServiceResolver(resolver), WithRefreshInterval(10 * time.Millisecond)}
+		}
+		c := MustNewClient("svc-refresh-valid", opts...)
+		if c.endpointManager == nil || c.endpointManager.refreshTicker == nil {
+			c.Close()
+			t.Fatalf("WithRefreshInterval 排在%s：refresh loop not started", order.name)
+		}
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) && resolver.calls.Load() < 3 {
+			time.Sleep(10 * time.Millisecond)
+		}
+		got := resolver.calls.Load()
+		c.Close()
+		if got < 3 {
+			t.Errorf("WithRefreshInterval 排在%s：resolver called %d times, want >= 3（刷新间隔丢失）", order.name, got)
+		}
+	}
+}
+
 // TestPriorityQueue_ReleaseUnknownPriority 回归测试：未知优先级按
 // PriorityNormal 释放（与 Acquire 的 default 分支对齐），不再泄漏许可（L5）。
 func TestPriorityQueue_ReleaseUnknownPriority(t *testing.T) {

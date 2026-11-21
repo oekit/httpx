@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/oekit/httpx/loadbalance"
+	pkgerrors "github.com/oekit/pkg/errors"
 	"github.com/oekit/pkg/pathx"
 )
 
@@ -29,24 +30,36 @@ func joinEndpoint(base, path string) string {
 	return pathx.JoinURL(base, path)
 }
 
-// resolveEndpoint 解析请求目标地址，返回完整地址前缀与负载均衡结果回写句柄。
-// done 需在请求最终结果确定后以最终错误调用（nil 表示无需回写）；
-// 无 EndpointManager 或选点失败时回退 baseURL 直连（done 为 nil）。
-func (c *Client) resolveEndpoint(ctx context.Context, path string) (string, loadbalance.DoneFunc) {
+// resolveEndpoint 解析请求目标地址，返回完整地址前缀、负载均衡结果回写句柄
+// 与解析错误。done 需在请求最终结果确定后以最终错误调用（nil 表示无需回写）。
+//
+// 选点失败（典型 loadbalance.ErrNoAvailable：无可用节点、注册中心为空、
+// 过滤后无候选）的边界（#276）：
+//   - 配了 baseURL：回退 baseURL 直连，保持历史降级行为（done 为 nil）；
+//   - 没配 baseURL：返回包装后的选点错误（errors.Is 可判定
+//     loadbalance.ErrNoAvailable）。此前返回相对 path，scheme 为空在传输层
+//     报 unsupported protocol ""——把「无实例」掩盖成协议错误，调用方无法
+//     做无实例降级/告警，errors.Is(ErrNoAvailable) 永不成立。
+func (c *Client) resolveEndpoint(ctx context.Context, path string) (string, loadbalance.DoneFunc, error) {
 	if c.endpointManager == nil {
 		if c.baseURL != "" {
-			return joinEndpoint(c.baseURL, path), nil
+			return joinEndpoint(c.baseURL, path), nil, nil
 		}
-		return path, nil
+		return path, nil, nil
 	}
 
 	endpoint, done, err := c.endpointManager.Pick(ctx, path)
 	if err != nil || endpoint == "" {
-		// 选点失败（无可用节点）：回退 baseURL 直连，保持历史降级行为
 		if c.baseURL != "" {
-			return joinEndpoint(c.baseURL, path), nil
+			// 选点失败（无可用节点）：回退 baseURL 直连，保持历史降级行为
+			return joinEndpoint(c.baseURL, path), nil, nil
 		}
-		return path, nil
+		if err == nil {
+			// 形如「空地址 + nil error」的异常选点同样归为无可用节点，
+			// 不让空地址流到传输层变成误导性的协议错误
+			err = loadbalance.ErrNoAvailable
+		}
+		return "", nil, pkgerrors.Wrapf(err, "httpx: %s: resolve endpoint %q (no baseURL to fall back to)", c.service, path)
 	}
-	return joinEndpoint(endpoint, path), done
+	return joinEndpoint(endpoint, path), done, nil
 }

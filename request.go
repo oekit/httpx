@@ -96,7 +96,10 @@ func (c *Client) exec(ctx context.Context, method, path, action, failVerb string
 	}
 	defer c.releasePriority(priority)
 
-	fullURL, lbDone := c.resolveEndpoint(ctx, path)
+	fullURL, lbDone, rerr := c.resolveEndpoint(ctx, path)
+	if rerr != nil {
+		return 0, nil, rerr
+	}
 
 	req, resp := protocol.AcquireRequest(), protocol.AcquireResponse()
 	defer protocol.ReleaseRequest(req)

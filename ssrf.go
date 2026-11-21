@@ -76,8 +76,15 @@ func SafeDialFuncWith(opts []pkgurlguard.GuardOption, next network.DialFunc) net
 //
 // https 目标受支持（#74）：拨通后按 tlsConfig 补握手——防护在 TLS 之前生效
 // （先校验再建连），握手只占拨号预算的剩余部分（拨号上限不倒挂，#92）。
+//
+// 与 WithDialFunc 互斥（#276）：后者直接覆盖 c.dialer 且装配的 fn 会让
+// guarded（pkg 判定层）整体消失——两者同时应用时构造期显式报错
+// （setConstructErr，与 #89 同口径），不再随 option 顺序静默丢失防护。
 func WithSafeDial(opts ...pkgurlguard.GuardOption) ClientOption {
 	return func(c *Client) {
+		if !c.claimDialMode(dialModeSafe) {
+			return
+		}
 		c.dialer = newSafeDialer(opts)
 	}
 }
