@@ -1,3 +1,13 @@
+## [v0.14.0] — 2026-11-21
+
+- 第三轮设计/缺陷审计（2026-11-21）httpx 修复：
+
+- fix: WithDialFunc 与 WithSafeDial 冲突经构造期错误拒绝（两顺序都拒绝）——SSRF 防护不再被静默顶掉（#276）
+- fix: resolveEndpoint 选点失败且无 baseURL 时返回包装 loadbalance.ErrNoAvailable（errors.Is 可判）——无实例不再被掩盖成协议错误（#276）
+- fix: WithRefreshInterval 构造期拒绝 d<=0 并消除 option 顺序依赖（#276）
+
+关联问题单：httpx#276。
+
 ## [v0.13.0] — 2026-11-20
 
 - fix(resolver): SelectorNodes 权重闭包接入 sdbridge.WeightOrDefault——weight<=0 归一 DefaultInstanceWeight=10，与 kitex/hertz 消费面同单源；此前 weightedSelector 把 <=0 视为 1，混合栈同数据流量分布分叉（#266）
