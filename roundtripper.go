@@ -114,7 +114,10 @@ func (rt *roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 		body = b
 	}
 
-	fullURL, lbDone := c.resolveEndpoint(ctx, req.URL.RequestURI())
+	fullURL, lbDone, rerr := c.resolveEndpoint(ctx, req.URL.RequestURI())
+	if rerr != nil {
+		return nil, rerr
+	}
 	// 标准 RoundTripper 语义（#9）：Client 未配置端点/baseURL 时，解析结果只是
 	// path?query（无 scheme://host），目标 = http.Request 自身的 scheme://host
 	// ——显式端口必须原样进入拨号寻址（旧版在此丢失 host:port，非 80/443 端点

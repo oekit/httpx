@@ -214,8 +214,16 @@ func WithTLSSkipVerify() ClientOption {
 // #151：fn 的签名（func(addr)）装不下拨号预算——hertz 传入的 timeout 仅约束
 // 拨号后的 TLS 握手段，建连预算由 fn 自身决定；需要 WithTimeout/WithDialTimeout
 // 的拨号预算透传（判定层收编 + 预算通道）用 WithSafeDial。
+//
+// 与 WithSafeDial 互斥（#276）：两者都直接装配 c.dialer，后应用者会让先
+// 应用者的拨号语义整体消失（尤其是 WithSafeDial 的 SSRF 判定）。同时应用
+// 时构造期显式报错（setConstructErr，与 #89 同口径），不再静默由 option
+// 顺序决定防护面；需要自定义拨号又保留判定时用 WithDialFunc(SafeDialFunc(nil))。
 func WithDialFunc(fn network.DialFunc, dialers ...network.Dialer) ClientOption {
 	return func(c *Client) {
+		if !c.claimDialMode(dialModeFunc) {
+			return
+		}
 		base := dialer.DefaultDialer()
 		if len(dialers) > 0 && dialers[0] != nil {
 			base = dialers[0]
@@ -616,8 +624,21 @@ func (c *Client) setDynamicResolver(resolver ServiceResolver) {
 }
 
 // WithRefreshInterval 设置 endpoint 刷新间隔。
+//
+// d 必须为正（#276）：0/负值在构造期经 setConstructErr 拒绝（NewClient 返回
+// error）。修复前不校验，同一非法值的效果取决于 option 顺序——排在
+// WithServiceResolver/WithNNS 之后时用 newEndpointManager(old.resolver, d)
+// 替换 manager，而 NewEndpointManager 仅在 refreshInterval>0 时启动刷新循环，
+// 动态发现彻底停摆（连首次刷新都不发生）；排在解析器之前时又回落 30s 缺省，
+// 同一配置两种行为。拒绝非法值后两种顺序等价：正值经
+// pendingRefreshInterval 透传到 setDynamicResolver 的 manager 装配。
 func WithRefreshInterval(d time.Duration) ClientOption {
 	return func(c *Client) {
+		if d <= 0 {
+			c.setConstructErr(pkgerrors.Newf(
+				"httpx: WithRefreshInterval(%s): 刷新间隔必须为正——0/负值会让动态发现停摆（刷新循环仅在 refreshInterval>0 时启动），且效果随 option 顺序漂移；如需关闭刷新请勿配置本选项", d))
+			return
+		}
 		c.pendingRefreshInterval = d
 		if c.endpointManager == nil {
 			return

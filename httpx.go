@@ -46,7 +46,47 @@ type Client struct {
 	retryScopes            sync.Map     // *protocol.Request → *retryScope：退避期 ctx/档位（#236）
 	hasBreaker             bool         // WithCircuitBreaker 是否装配（熔断 gauge 初始化用）
 	staticEndpoints        bool         // WithEndpoints 是否装配过（与动态 resolver 互斥判定，#89）
+	dialMode               dialMode     // 拨号装配来源（WithDialFunc/WithSafeDial 互斥判定，#276）
 	constructErr           error        // 构造期配置冲突（首个生效），NewClient 汇总返回（#83）
+}
+
+// dialMode 记录拨号装配来源（#276）：WithDialFunc 与 WithSafeDial 互斥。
+//
+// 两者都直接写 c.dialer，后应用者静默赢——WithSafeDial(), WithDialFunc(f)
+// 会让 tlsAwareDialer.fn 顶掉 guarded，拨号层 SSRF 判定整体消失且构造期
+// 无错误/告警；反过来则自定义拨号被丢弃。装配来源显式建模后，冲突在
+// 构造期经 constructErr 显式返回（与 #89 静态/动态互斥同口径）。
+type dialMode uint8
+
+const (
+	dialModeNone dialMode = iota // 未装配拨号器（或仅逃生舱装配）
+	dialModeFunc                 // WithDialFunc：自定义拨号函数（通用注入，无判定层）
+	dialModeSafe                 // WithSafeDial：pkg/urlguard 判定 + 拨号预算
+)
+
+func (m dialMode) String() string {
+	switch m {
+	case dialModeFunc:
+		return "WithDialFunc"
+	case dialModeSafe:
+		return "WithSafeDial"
+	default:
+		return "未装配拨号器"
+	}
+}
+
+// claimDialMode 声明拨号装配来源（#276）：已装配另一种来源时落 constructErr
+// （首个错误生效，NewClient 汇总返回），后应用者不再静默覆盖先应用者。
+// 返回 false 表示冲突，调用方不得改写 c.dialer。
+func (c *Client) claimDialMode(mode dialMode) bool {
+	if c.dialMode != dialModeNone && c.dialMode != mode {
+		c.setConstructErr(errors.Newf(
+			"httpx: %s 与 %s 互斥：后应用者会静默顶掉先装配的拨号器（拨号层 SSRF 判定整体消失，或自定义拨号被丢弃），且构造期无错误；一个 Client 只能有一种拨号装配。需要自定义拨号又保留判定时，用 WithDialFunc(SafeDialFunc(nil)) 或在自己的拨号函数内调用判定层",
+			c.dialMode, mode))
+		return false
+	}
+	c.dialMode = mode
+	return true
 }
 
 // NewClient 创建 HTTP 客户端实例，应用指定的配置选项。
