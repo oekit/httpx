@@ -7,7 +7,11 @@ require (
 	github.com/oekit/concurrency v0.40.0
 	github.com/oekit/logx v0.12.1
 	github.com/oekit/metrics v0.4.3
+<<<<<<< HEAD
 	github.com/oekit/pkg v0.61.1
+=======
+	github.com/oekit/pkg v0.61.2
+>>>>>>> 1b230d1 (build: 依赖地板对齐——pkg → v0.61.2)
 	github.com/oekit/registry v0.8.4
 	github.com/oekit/tracing v0.4.9
 	github.com/prometheus/client_golang v1.25.0
