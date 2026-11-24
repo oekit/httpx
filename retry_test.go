@@ -8,8 +8,8 @@ import (
 )
 
 // TestWithRetryConfig_AppendsHertzOption 验证 WithRetryConfig 把
-// client.WithRetryConfig(...) 添加到 c.hzOpts,hertz 内部 retry 引擎
-// 接管重试逻辑(不走我们手写 middleware)。
+// client.WithRetryConfig(...) 添加到 c.hzOpts——次数上限仍交 hertz 的重试循环
+// （HostClient.Do），退避等待自 #236 起由 httpx 层执行（retryPolicy 非 nil）。
 func TestWithRetryConfig_AppendsHertzOption(t *testing.T) {
 	c := MustNewClient("test",
 		WithRetryConfig(3, 100*time.Millisecond, 1*time.Second, 50*time.Millisecond),
@@ -20,6 +20,13 @@ func TestWithRetryConfig_AppendsHertzOption(t *testing.T) {
 	// c.hzOpts 长度应 >= 1(WithRetryConfig 至少加 1 个 RetryConfig option)
 	if len(c.hzOpts) == 0 {
 		t.Fatal("expected hzOpts to include WithRetryConfig, got empty")
+	}
+	// 退避参数快照落在 retryPolicy（#236：等待在 httpx 层算、可被 ctx 打断）
+	if c.retryPolicy == nil {
+		t.Fatal("expected retryPolicy snapshot from WithRetryConfig, got nil")
+	}
+	if c.retryIf == nil {
+		t.Fatal("expected default retry predicate injected by WithRetryConfig")
 	}
 }
 
@@ -44,7 +51,8 @@ func TestWithRetryConfig_CombinedWithCircuitBreaker(t *testing.T) {
 	if c == nil {
 		t.Fatal("NewClient with retry+breaker returned nil")
 	}
-	// retry 走 hertz 内部(不进 c.mw),breaker 走手写 middleware(进 c.mw)
+	// 次数上限走 hertz(进 hzOpts,不进 c.mw),退避等待走 httpx 层(#236),
+	// breaker 走手写 middleware(进 c.mw)
 	if len(c.mw) == 0 {
 		t.Error("expected CircuitBreaker middleware in c.mw")
 	}

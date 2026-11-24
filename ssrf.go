@@ -3,13 +3,13 @@ package httpx
 import (
 	"context"
 	"crypto/tls"
-	"fmt"
 	"net"
 	"time"
 
 	"github.com/cloudwego/hertz/pkg/network"
 	hzdialer "github.com/cloudwego/hertz/pkg/network/dialer"
 	"github.com/cloudwego/hertz/pkg/network/standard"
+	errors "github.com/oekit/pkg/errors"
 	pkgurlguard "github.com/oekit/pkg/urlguard"
 )
 
@@ -76,8 +76,15 @@ func SafeDialFuncWith(opts []pkgurlguard.GuardOption, next network.DialFunc) net
 //
 // https 目标受支持（#74）：拨通后按 tlsConfig 补握手——防护在 TLS 之前生效
 // （先校验再建连），握手只占拨号预算的剩余部分（拨号上限不倒挂，#92）。
+//
+// 与 WithDialFunc 互斥（#276）：后者直接覆盖 c.dialer 且装配的 fn 会让
+// guarded（pkg 判定层）整体消失——两者同时应用时构造期显式报错
+// （setConstructErr，与 #89 同口径），不再随 option 顺序静默丢失防护。
 func WithSafeDial(opts ...pkgurlguard.GuardOption) ClientOption {
 	return func(c *Client) {
+		if !c.claimDialMode(dialModeSafe) {
+			return
+		}
 		c.dialer = newSafeDialer(opts)
 	}
 }
@@ -130,7 +137,7 @@ func newGuardedDial(g *pkgurlguard.Guard, gerr error, next network.DialFunc, bas
 		hc, ok := conn.(network.Conn)
 		if !ok {
 			_ = conn.Close()
-			return nil, fmt.Errorf("urlguard: dial %q: 连接类型 %T 不是 hertz network.Conn", addr, conn)
+			return nil, errors.Newf("urlguard: dial %q: 连接类型 %T 不是 hertz network.Conn", addr, conn)
 		}
 		return hc, nil
 	}

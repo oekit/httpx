@@ -2,6 +2,7 @@ package httpx
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -39,7 +40,10 @@ func TestResolveEndpoint_PathWithoutLeadingSlash(t *testing.T) {
 	t.Run("baseURL", func(t *testing.T) {
 		c := MustNewClient("v112", WithBaseURL("http://h:8080/"))
 		defer c.Close()
-		got, _ := c.resolveEndpoint(context.Background(), "api/x")
+		got, _, err := c.resolveEndpoint(context.Background(), "api/x")
+		if err != nil {
+			t.Fatalf("resolveEndpoint: %v", err)
+		}
 		if got != "http://h:8080/api/x" {
 			t.Fatalf("resolveEndpoint = %q, want http://h:8080/api/x", got)
 		}
@@ -47,7 +51,10 @@ func TestResolveEndpoint_PathWithoutLeadingSlash(t *testing.T) {
 	t.Run("baseURL-trailing-slash", func(t *testing.T) {
 		c := MustNewClient("v112", WithBaseURL("http://h:8080"))
 		defer c.Close()
-		got, _ := c.resolveEndpoint(context.Background(), "api/x")
+		got, _, err := c.resolveEndpoint(context.Background(), "api/x")
+		if err != nil {
+			t.Fatalf("resolveEndpoint: %v", err)
+		}
 		if got != "http://h:8080/api/x" {
 			t.Fatalf("resolveEndpoint = %q, want http://h:8080/api/x", got)
 		}
@@ -55,7 +62,10 @@ func TestResolveEndpoint_PathWithoutLeadingSlash(t *testing.T) {
 	t.Run("static-endpoint", func(t *testing.T) {
 		c := MustNewClient("v112", WithEndpoints("http://h:8080"))
 		defer c.Close()
-		got, _ := c.resolveEndpoint(context.Background(), "api/x")
+		got, _, err := c.resolveEndpoint(context.Background(), "api/x")
+		if err != nil {
+			t.Fatalf("resolveEndpoint: %v", err)
+		}
 		if got != "http://h:8080/api/x" {
 			t.Fatalf("resolveEndpoint = %q, want http://h:8080/api/x", got)
 		}
@@ -63,7 +73,10 @@ func TestResolveEndpoint_PathWithoutLeadingSlash(t *testing.T) {
 	t.Run("absolute-path-unchanged", func(t *testing.T) {
 		c := MustNewClient("v112", WithBaseURL("http://h:8080"))
 		defer c.Close()
-		got, _ := c.resolveEndpoint(context.Background(), "/api/x?k=v")
+		got, _, err := c.resolveEndpoint(context.Background(), "/api/x?k=v")
+		if err != nil {
+			t.Fatalf("resolveEndpoint: %v", err)
+		}
 		if got != "http://h:8080/api/x?k=v" {
 			t.Fatalf("resolveEndpoint = %q, want http://h:8080/api/x?k=v", got)
 		}
@@ -103,12 +116,43 @@ func TestResolveEndpoint_Fallback_PathWithoutLeadingSlash(t *testing.T) {
 	c := MustNewClient("v112-fb", WithBaseURL("http://h:8080"), WithEndpoints("http://stale:1"))
 	c.endpointManager.SetEndpoints(nil)
 	defer c.Close()
-	got, done := c.resolveEndpoint(context.Background(), "api/x")
+	got, done, err := c.resolveEndpoint(context.Background(), "api/x")
+	if err != nil {
+		t.Fatalf("fallback resolveEndpoint must not error: %v", err)
+	}
 	if got != "http://h:8080/api/x" {
 		t.Fatalf("fallback resolveEndpoint = %q, want http://h:8080/api/x", got)
 	}
 	if done != nil {
 		t.Fatalf("fallback done should be nil")
+	}
+}
+
+// TestResolveEndpoint_NoAvailableWithoutBaseURL 回归（#276）：Pick 失败且
+// 无 baseURL 时不得返回相对 path（scheme 空 → 传输层 unsupported protocol ""），
+// 必须返回包装后的 loadbalance.ErrNoAvailable 且 errors.Is 可判定——否则
+// 冷启动无实例/注册中心空/过滤后无候选被掩盖成协议错误，调用方无法做
+// 无实例降级或告警。有 baseURL 时仍保持历史回退行为（见上一用例）。
+func TestResolveEndpoint_NoAvailableWithoutBaseURL(t *testing.T) {
+	c := MustNewClient("v276-nonodes", WithEndpoints("http://10.0.0.1:8080"))
+	c.endpointManager.SetEndpoints(nil) // 无可用节点 ⇒ Pick 返回 ErrNoAvailable
+	defer c.Close()
+
+	fullURL, done, err := c.resolveEndpoint(context.Background(), "api/x")
+	if err == nil {
+		t.Fatalf("expected ErrNoAvailable, got fullURL=%q done=%v", fullURL, done)
+	}
+	if !errors.Is(err, loadbalance.ErrNoAvailable) {
+		t.Fatalf("errors.Is(err, ErrNoAvailable) must hold, got %v", err)
+	}
+	if fullURL != "" || done != nil {
+		t.Errorf("failed resolve must return empty URL and nil done, got %q / %v", fullURL, done)
+	}
+
+	// 端到端：调用方拿到的是可判定的无实例错误，而非 unsupported protocol ""
+	_, _, derr := c.DoDetail(context.Background(), http.MethodGet, "/x", nil)
+	if derr == nil || !errors.Is(derr, loadbalance.ErrNoAvailable) {
+		t.Fatalf("DoDetail must surface ErrNoAvailable, got %v", derr)
 	}
 }
 

@@ -11,7 +11,8 @@ package loadbalance
 import (
 	"context"
 	"errors"
-	"fmt"
+
+	pkgerrors "github.com/oekit/pkg/errors"
 )
 
 // 负载均衡策略名称常量（与 nns/metadata 中配置字符串保持一致）。
@@ -122,7 +123,7 @@ func NewSelector(name string, opts ...SelectorOption) (Selector, error) {
 	case StrategyP2C:
 		return newP2CSelector(opts...), nil
 	default:
-		return nil, fmt.Errorf("unsupported load balance strategy: %s", name)
+		return nil, pkgerrors.Newf("unsupported load balance strategy: %s", name)
 	}
 }
 

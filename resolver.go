@@ -12,7 +12,9 @@ import (
 	"github.com/oekit/concurrency/async"
 	"github.com/oekit/httpx/loadbalance"
 	"github.com/oekit/logx"
+	errors "github.com/oekit/pkg/errors"
 	"github.com/oekit/registry"
+	"github.com/oekit/registry/sdbridge"
 )
 
 var httpLog = logx.Delegating("httpx")
@@ -53,10 +55,17 @@ func instanceScheme(i registry.Instance) string {
 
 // SelectorNodes 把注册中心实例切片适配为 Selector 节点（字段闭包映射，
 // 地址 scheme 从实例 Metadata 取（键 MetadataKeyScheme），缺省 "http"）。
+// 权重经 sdbridge.WeightOrDefault 归一（#266）：正数原值透传，<=0 回填
+// registry.DefaultInstanceWeight——与 kitex/hertz convert 消费面同一单源。
+// 修复前 raw Weight 直传，weightedSelector 把 <=0 视为 1，同一注册数据
+// （权重漏配为 0）混合技术栈下流量分布不一致（kitex/hertz 每实例 10 份、
+// httpx 每实例 1 份）。
 func SelectorNodes(insts []registry.Instance) []loadbalance.Node {
 	return loadbalance.NodesFrom(insts,
 		func(i registry.Instance) string { return instanceScheme(i) + "://" + i.Addr() },
-		func(i registry.Instance) float64 { return i.Weight },
+		func(i registry.Instance) float64 {
+			return sdbridge.WeightOrDefault(i.Weight, registry.DefaultInstanceWeight)
+		},
 		func(i registry.Instance) map[string]string { return i.Metadata },
 		func(i registry.Instance) string { return i.Service },
 	)
@@ -283,10 +292,10 @@ func NewNNSResolver(serviceName string, nnsClient NNSClient) *NNSResolver {
 func (r *NNSResolver) ResolveInstances(ctx context.Context) ([]registry.Instance, error) {
 	instances, err := r.nnsClient.GetInstances(ctx, r.serviceName)
 	if err != nil {
-		return nil, fmt.Errorf("nns resolve %s: %w", r.serviceName, err)
+		return nil, errors.Wrapf(err, "nns resolve %s", r.serviceName)
 	}
 	if len(instances) == 0 {
-		return nil, fmt.Errorf("nns resolve %s: no instances available", r.serviceName)
+		return nil, errors.Newf("nns resolve %s: no instances available", r.serviceName)
 	}
 	return instances, nil
 }
@@ -318,7 +327,7 @@ func NewStaticResolver(endpoints []string) *StaticResolver {
 // Resolve 返回静态配置的 endpoint 列表。
 func (r *StaticResolver) Resolve(ctx context.Context) ([]string, error) {
 	if len(r.endpoints) == 0 {
-		return nil, fmt.Errorf("static resolver: no endpoints configured")
+		return nil, errors.New("static resolver: no endpoints configured")
 	}
 	return r.endpoints, nil
 }

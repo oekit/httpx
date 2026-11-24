@@ -15,9 +15,12 @@ import (
 	"github.com/cloudwego/hertz/pkg/protocol"
 	"github.com/oekit/httpx/codec"
 	"github.com/oekit/httpx/loadbalance"
+	errors "github.com/oekit/pkg/errors"
+	"github.com/oekit/pkg/stringx"
 )
 
 // GetJSON 发送 GET 请求并将响应反序列化到 out。
+// 2xx 空响应体（204/Content-Length: 0）不触发反序列化，out 保持零值（#237）。
 func (c *Client) GetJSON(ctx context.Context, path string, out any) error {
 	return c.DoJSON(ctx, http.MethodGet, path, nil, out)
 }
@@ -67,7 +70,7 @@ func (c *Client) doWithLBDone(ctx context.Context, req *protocol.Request, resp *
 		lbDone(ctx, loadbalance.DoneInfo{Err: err})
 	}
 	if err != nil {
-		return fmt.Errorf("%s: %s: %w", c.service, failVerb, err)
+		return errors.Wrapf(err, "%s: %s", c.service, failVerb)
 	}
 	return nil
 }
@@ -93,7 +96,10 @@ func (c *Client) exec(ctx context.Context, method, path, action, failVerb string
 	}
 	defer c.releasePriority(priority)
 
-	fullURL, lbDone := c.resolveEndpoint(ctx, path)
+	fullURL, lbDone, rerr := c.resolveEndpoint(ctx, path)
+	if rerr != nil {
+		return 0, nil, rerr
+	}
 
 	req, resp := protocol.AcquireRequest(), protocol.AcquireResponse()
 	defer protocol.ReleaseRequest(req)
@@ -143,7 +149,7 @@ func marshalJSONBody(c *Client, body any) func() ([]byte, string, error) {
 		}
 		data, err := json.Marshal(body)
 		if err != nil {
-			return nil, "", fmt.Errorf("%s: marshal body: %w", c.service, err)
+			return nil, "", errors.Wrapf(err, "%s: marshal body", c.service)
 		}
 		return data, "application/json", nil
 	}
@@ -154,6 +160,11 @@ func marshalJSONBody(c *Client, body any) func() ([]byte, string, error) {
 // （查不到回退请求 codec）。codecName 未注册时返回 error 而非 panic（#114，
 // 与 #83「失败显式返回、不升级为进程死亡」同族契约）：codec 名常来自配置，
 // Must 语义只保留给显式调用 codec.MustGetCodec 的场景。
+//
+// 2xx 且响应体为空（204 No Content、200 + Content-Length: 0、DELETE 的空成功
+// 响应）不触发反序列化、按成功返回，out 保持调用方传入的零值（#237）——
+// 「有内容才解」是本方法对 out 的承诺，修复前是「2xx 且 out 非 nil 就解」，
+// 空体成功被包装成 unmarshal 错误返回。
 func (c *Client) DoCodec(ctx context.Context, codecName, method, path string, body any, out any) error {
 	cd := codec.GetCodec(codecName)
 	if cd == nil {
@@ -168,7 +179,7 @@ func (c *Client) DoCodec(ctx context.Context, codecName, method, path string, bo
 			}
 			data, err := cd.Marshal(body)
 			if err != nil {
-				return nil, "", fmt.Errorf("%s: marshal body: %w", c.service, err)
+				return nil, "", errors.Wrapf(err, "%s: marshal body", c.service)
 			}
 			return data, cd.ContentType(), nil
 		}, out, cd)
@@ -209,11 +220,11 @@ func (c *Client) UploadFile(ctx context.Context, path, filePath, fieldName strin
 			// 且 part filename 是完整本地路径（泄漏服务器目录结构）。
 			data, err := os.ReadFile(filePath)
 			if err != nil {
-				return nil, "", fmt.Errorf("%s: read upload file: %w", c.service, err)
+				return nil, "", errors.Wrapf(err, "%s: read upload file", c.service)
 			}
 			body, contentType, err := buildMultipartFileBytes(fieldName, filepath.Base(filePath), data, extraFields)
 			if err != nil {
-				return nil, "", fmt.Errorf("%s: build multipart: %w", c.service, err)
+				return nil, "", errors.Wrapf(err, "%s: build multipart", c.service)
 			}
 			return body, contentType, nil
 		}, out, nil)
@@ -226,7 +237,7 @@ func (c *Client) UploadBytes(ctx context.Context, path string, data []byte, fiel
 		func() ([]byte, string, error) {
 			body, contentType, err := buildMultipartFileBytes(fieldName, fileName, data, extraFields)
 			if err != nil {
-				return nil, "", fmt.Errorf("%s: build multipart: %w", c.service, err)
+				return nil, "", errors.Wrapf(err, "%s: build multipart", c.service)
 			}
 			return body, contentType, nil
 		}, out, nil)
@@ -245,10 +256,16 @@ func (c *Client) applyAuth(req *protocol.Request) {
 // handleResponse 校验响应状态码并反序列化输出。
 // cd 非 nil 时按其 Content-Type 优先协商（响应头反查，查不到回退 cd）；
 // cd 为 nil 时按 encoding/json 直接解析（历史行为，Upload/DoRaw 路径）。
+//
+// 2xx 且响应体为空（#237）：不触发反序列化、直接按成功返回——204 No Content、
+// 200 + Content-Length: 0、DELETE/PUT 的空成功响应都是标准成功形态，修复前
+// 无条件 json.Unmarshal([]byte{}, out) 返回 "unexpected end of JSON input"，
+// 把**成功的请求**系统性误报成失败（调用方只能逐处改 out=nil 或换 DoDetail
+// 绕开）。此时 out 保持调用方传入的零值。
 func (c *Client) handleResponse(resp *protocol.Response, action string, out any, cd codec.Codec) error {
 	code := resp.StatusCode()
 	if code >= 200 && code < 300 {
-		if out != nil {
+		if out != nil && len(resp.Body()) > 0 {
 			var decodeErr error
 			switch {
 			case cd != nil:
@@ -258,15 +275,17 @@ func (c *Client) handleResponse(resp *protocol.Response, action string, out any,
 				decodeErr = json.Unmarshal(resp.Body(), out)
 			}
 			if decodeErr != nil {
-				return fmt.Errorf("%s: unmarshal response: %w", c.service, decodeErr)
+				return errors.Wrapf(decodeErr, "%s: unmarshal response", c.service)
 			}
 		}
 		return nil
 	}
-	msg := string(resp.Body())
-	if len(msg) > 500 {
-		msg = msg[:500]
-	}
+	// 错误体摘要按 rune 边界截断（#253）：此前 msg[:500] 按字节下刀，中文
+	// /emoji 等多字节 UTF-8 错误体恰好在第 500 字节被腰斩——半个字符落进
+	// ServiceError.Message 成为非法 UTF-8，下游 JSON 序列化/日志采集再编码
+	// 即乱码。stringx.FirstN 按字符边界截断；不传省略号——错误摘要要的是
+	// 原文前缀，不要装饰。
+	msg := stringx.FirstN(string(resp.Body()), 500)
 	return &ServiceError{
 		Service: c.service,
 		Action:  action,

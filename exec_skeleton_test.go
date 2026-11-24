@@ -175,7 +175,7 @@ func TestDoRaw_ErrorReturnsNilBody(t *testing.T) {
 		t.Errorf("DoRaw on error must return nil body, got %q", raw)
 	}
 	var svcErr *ServiceError
-	if !errAs(err, &svcErr) || svcErr.Code != 500 {
+	if !errors.As(err, &svcErr) || svcErr.Code != 500 {
 		t.Fatalf("expected *ServiceError code 500, got %T: %v", err, err)
 	}
 
@@ -235,7 +235,7 @@ func TestUploadBytes_FormShapeAndErrorAction(t *testing.T) {
 	defer cErr.Close()
 	err := cErr.UploadBytes(context.Background(), "/upload", []byte("x"), "upload", "a.txt", nil, nil)
 	var svcErr *ServiceError
-	if !errAs(err, &svcErr) || svcErr.Action != "UPLOAD /upload" || svcErr.Code != 403 {
+	if !errors.As(err, &svcErr) || svcErr.Action != "UPLOAD /upload" || svcErr.Code != 403 {
 		t.Fatalf("expected ServiceError{Action: UPLOAD /upload, Code: 403}, got %T: %v", err, err)
 	}
 }
@@ -370,6 +370,81 @@ func TestExecSkeleton_LbDoneCalledOnBuildBodyError(t *testing.T) {
 	case <-reqs:
 		t.Fatal("marshal error must not reach the wire")
 	default:
+	}
+}
+
+// TestExecSkeleton_LbDoneCalledOnBuildBodyError_AllEntries 回归（#239）：
+// resolveEndpoint 之后的**每一条**构造期失败路径都必须回写 lbDone——#204 先修
+// 了 DoCodec 一处，本测试把 issue 点名的入口（DoCodec/DoRaw/DoDetail/
+// UploadFile）全部钉住：选点已发生却拿不到 DoneInfo 的话，P2C/加权选择器的
+// 失败样本（EWMA、失败节点计数、健康度衰减）系统性缺失，且此路径可随同一请求
+// 重试反复触发、反馈缺口非单次噪声。
+//
+// UploadBytes 的 buildBody（buildMultipartFileBytes，bytes.Buffer 写入）在
+// 现实里不可失败，故不单列用例——它与 UploadFile 共用 exec 的同一段回写代码。
+func TestExecSkeleton_LbDoneCalledOnBuildBodyError_AllEntries(t *testing.T) {
+	ctx := context.Background()
+	srvURL, reqs := jsonServer(t, http.StatusOK, `{}`)
+	badBody := map[string]any{"ch": make(chan int)} // json.Marshal 必失败
+
+	cases := []struct {
+		name    string
+		call    func(*Client) error
+		wantErr string
+	}{
+		{
+			name: "DoCodec",
+			call: func(c *Client) error {
+				return c.DoCodec(ctx, codec.DefaultName, http.MethodPost, "/x", badBody, nil)
+			},
+			wantErr: "marshal body",
+		},
+		{
+			name: "DoRaw",
+			call: func(c *Client) error {
+				_, err := c.DoRaw(ctx, http.MethodPost, "/x", badBody)
+				return err
+			},
+			wantErr: "marshal body",
+		},
+		{
+			name: "DoDetail",
+			call: func(c *Client) error {
+				_, _, err := c.DoDetail(ctx, http.MethodPost, "/x", badBody)
+				return err
+			},
+			wantErr: "marshal body",
+		},
+		{
+			name: "UploadFile",
+			call: func(c *Client) error {
+				return c.UploadFile(ctx, "/x", "/nonexistent/httpx-no-such-file-239", "file", nil, nil)
+			},
+			wantErr: "read upload file",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, rs := newRecordingClient(t, srvURL)
+			t.Cleanup(c.Close)
+			err := tc.call(c)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err = %v, want %q", err, tc.wantErr)
+			}
+			got := rs.lastErr()
+			if got == nil || errors.Is(got, errNoDoneRecorded) {
+				t.Fatalf("构造期失败必须回写 lbDone（#239），got %v", got)
+			}
+			if !strings.Contains(got.Error(), tc.wantErr) {
+				t.Errorf("DoneInfo.Err = %v, want 携带 %q 的构造期错误本身", got, tc.wantErr)
+			}
+			select {
+			case <-reqs:
+				t.Fatal("构造期失败不得触网")
+			default:
+			}
+		})
 	}
 }
 

@@ -2,9 +2,10 @@ package httpx
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"net/http"
+
+	errors "github.com/oekit/pkg/errors"
 )
 
 // DoOnce 一次性低阶请求原语：发出请求 → 读尽响应体 → 返回
@@ -29,7 +30,7 @@ import (
 //     体量的响应；超大响应的流式消费不要经本原语缓冲。
 func DoOnce(ctx context.Context, hc *http.Client, req *http.Request) (status int, body []byte, err error) {
 	if req == nil {
-		return 0, nil, fmt.Errorf("httpx: DoOnce: nil request")
+		return 0, nil, errors.New("httpx: DoOnce: nil request")
 	}
 	if hc == nil {
 		hc = http.DefaultClient
@@ -50,7 +51,7 @@ func DoOnce(ctx context.Context, hc *http.Client, req *http.Request) (status int
 	status = resp.StatusCode
 	body, err = io.ReadAll(resp.Body)
 	if err != nil {
-		return status, nil, fmt.Errorf("httpx: DoOnce: read response body (status %d): %w", status, err)
+		return status, nil, errors.Wrapf(err, "httpx: DoOnce: read response body (status %d)", status)
 	}
 	return status, body, nil
 }

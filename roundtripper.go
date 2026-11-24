@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/cloudwego/hertz/pkg/protocol"
+	errors "github.com/oekit/pkg/errors"
 )
 
 // net/http 桥接层（#8）：把 httpx 的熔断/重试/指标/链路透传装进标准库
@@ -108,12 +109,15 @@ func (rt *roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req.Body != nil {
 		b, err := io.ReadAll(req.Body)
 		if err != nil {
-			return nil, fmt.Errorf("%s: read request body: %w", c.service, err)
+			return nil, errors.Wrapf(err, "%s: read request body", c.service)
 		}
 		body = b
 	}
 
-	fullURL, lbDone := c.resolveEndpoint(ctx, req.URL.RequestURI())
+	fullURL, lbDone, rerr := c.resolveEndpoint(ctx, req.URL.RequestURI())
+	if rerr != nil {
+		return nil, rerr
+	}
 	// 标准 RoundTripper 语义（#9）：Client 未配置端点/baseURL 时，解析结果只是
 	// path?query（无 scheme://host），目标 = http.Request 自身的 scheme://host
 	// ——显式端口必须原样进入拨号寻址（旧版在此丢失 host:port，非 80/443 端点

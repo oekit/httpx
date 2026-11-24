@@ -2,11 +2,12 @@ package codec
 
 import (
 	"errors"
-	"fmt"
 	"net/url"
 	"reflect"
 	"strconv"
 	"strings"
+
+	pkgerrors "github.com/oekit/pkg/errors"
 )
 
 // FormCodec 是 application/x-www-form-urlencoded 编解码器（#7）。
@@ -35,7 +36,7 @@ func (FormCodec) Marshal(v any) ([]byte, error) {
 func (FormCodec) Unmarshal(data []byte, v any) error {
 	vals, err := url.ParseQuery(string(data))
 	if err != nil {
-		return fmt.Errorf("form: parse query: %w", err)
+		return pkgerrors.Wrapf(err, "form: parse query")
 	}
 	return decodeForm(vals, v)
 }
@@ -80,7 +81,7 @@ func encodeForm(v any) (url.Values, error) {
 			for j := range fv.Len() {
 				s, err := scalarToString(fv.Index(j))
 				if err != nil {
-					return nil, fmt.Errorf("form: field %s: %w", f.Name, err)
+					return nil, pkgerrors.Wrapf(err, "form: field %s", f.Name)
 				}
 				vals.Add(key, s)
 			}
@@ -88,7 +89,7 @@ func encodeForm(v any) (url.Values, error) {
 		}
 		s, err := scalarToString(fv)
 		if err != nil {
-			return nil, fmt.Errorf("form: field %s: %w", f.Name, err)
+			return nil, pkgerrors.Wrapf(err, "form: field %s", f.Name)
 		}
 		vals.Set(key, s)
 	}
@@ -121,12 +122,12 @@ func decodeForm(vals url.Values, v any) error {
 		fv := rv.Field(i)
 		if fv.Kind() == reflect.Slice {
 			if err := setSlice(fv, raws); err != nil {
-				return fmt.Errorf("form: field %s: %w", f.Name, err)
+				return pkgerrors.Wrapf(err, "form: field %s", f.Name)
 			}
 			continue
 		}
 		if err := setScalar(fv, raws[0]); err != nil {
-			return fmt.Errorf("form: field %s: %w", f.Name, err)
+			return pkgerrors.Wrapf(err, "form: field %s", f.Name)
 		}
 	}
 	return nil
@@ -177,7 +178,7 @@ func setScalar(fv reflect.Value, raw string) error {
 	case reflect.Bool:
 		b, err := strconv.ParseBool(raw)
 		if err != nil {
-			return fmt.Errorf("parse bool %q: %w", raw, err)
+			return pkgerrors.Wrapf(err, "parse bool %q", raw)
 		}
 		fv.SetBool(b)
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
@@ -186,19 +187,19 @@ func setScalar(fv reflect.Value, raw string) error {
 		// 「cannot unmarshal 300 into int8」语义对齐
 		n, err := strconv.ParseInt(raw, 10, fv.Type().Bits())
 		if err != nil {
-			return fmt.Errorf("parse int %q: %w", raw, err)
+			return pkgerrors.Wrapf(err, "parse int %q", raw)
 		}
 		fv.SetInt(n)
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		n, err := strconv.ParseUint(raw, 10, fv.Type().Bits())
 		if err != nil {
-			return fmt.Errorf("parse uint %q: %w", raw, err)
+			return pkgerrors.Wrapf(err, "parse uint %q", raw)
 		}
 		fv.SetUint(n)
 	case reflect.Float32, reflect.Float64:
 		f, err := strconv.ParseFloat(raw, 64)
 		if err != nil {
-			return fmt.Errorf("parse float %q: %w", raw, err)
+			return pkgerrors.Wrapf(err, "parse float %q", raw)
 		}
 		fv.SetFloat(f)
 	default:

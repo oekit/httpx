@@ -16,8 +16,10 @@ import (
 	"github.com/cloudwego/hertz/pkg/network/dialer"
 	"github.com/cloudwego/hertz/pkg/network/standard"
 	"github.com/cloudwego/hertz/pkg/protocol"
+	retryhttpx "github.com/oekit/concurrency/retry/httpx"
 	"github.com/oekit/httpx/loadbalance"
 	"github.com/oekit/metrics/resilience"
+	pkgerrors "github.com/oekit/pkg/errors"
 	prom "github.com/prometheus/client_golang/prometheus"
 	"github.com/sony/gobreaker"
 	"go.opentelemetry.io/otel"
@@ -54,7 +56,7 @@ func WithBaseURL(u string) ClientOption {
 		}
 		parsed, err := url.Parse(u)
 		if err != nil || parsed.Host == "" {
-			c.setConstructErr(fmt.Errorf(
+			c.setConstructErr(pkgerrors.Newf(
 				"httpx: WithBaseURL: 非法 baseURL %q（url.Parse 失败或缺少 host；应为 scheme://host[:port] 形态，如 http://user-service:8080）", u))
 			return
 		}
@@ -78,6 +80,9 @@ func WithBaseURL(u string) ClientOption {
 //     阶段真实受控）；WithDialFunc 注入的自定义 DialFunc 签名（func(addr)）
 //     装不下预算，建连预算由拨号器自身决定；
 //   - 流式响应（SSE/代理长连接/WS 升级）不能用整段读超时掐流，用 WithStream；
+//   - 指标联动（#238）：WithMetrics 的 request_duration_seconds 缺省桶上界是
+//     30s（与缺省读超时对齐）。把超时调得**更长**时 >30s 的时延会落 +Inf 桶、
+//     长尾在直方图上不可分辨——桶上界应 ≥ 本选项的超时上限；
 //   - d <= 0 是构造期非法值（#169）：hertz 直传 net.DialTimeout 后按 net 包
 //     契约「negative or zero means no timeout」解析，负值/零把拨号与读双双
 //     退化为无限等待，与本选项「总预算有上界」的承诺相反——NewClient 构造期
@@ -86,7 +91,7 @@ func WithBaseURL(u string) ClientOption {
 func WithTimeout(d time.Duration) ClientOption {
 	return func(c *Client) {
 		if d <= 0 {
-			c.setConstructErr(fmt.Errorf(
+			c.setConstructErr(pkgerrors.Newf(
 				"httpx: WithTimeout: d must be > 0, got %s——负值/零会让拨号与读超时双双退化为无限等待（net 包契约 negative or zero means no timeout）；流式等需要关闭读超时的场景用 WithStream，彻底不限经 WithHertzOption(client.WithDialTimeout(0), client.WithClientReadTimeout(0)) 显式声明", d))
 			return
 		}
@@ -209,8 +214,16 @@ func WithTLSSkipVerify() ClientOption {
 // #151：fn 的签名（func(addr)）装不下拨号预算——hertz 传入的 timeout 仅约束
 // 拨号后的 TLS 握手段，建连预算由 fn 自身决定；需要 WithTimeout/WithDialTimeout
 // 的拨号预算透传（判定层收编 + 预算通道）用 WithSafeDial。
+//
+// 与 WithSafeDial 互斥（#276）：两者都直接装配 c.dialer，后应用者会让先
+// 应用者的拨号语义整体消失（尤其是 WithSafeDial 的 SSRF 判定）。同时应用
+// 时构造期显式报错（setConstructErr，与 #89 同口径），不再静默由 option
+// 顺序决定防护面；需要自定义拨号又保留判定时用 WithDialFunc(SafeDialFunc(nil))。
 func WithDialFunc(fn network.DialFunc, dialers ...network.Dialer) ClientOption {
 	return func(c *Client) {
+		if !c.claimDialMode(dialModeFunc) {
+			return
+		}
 		base := dialer.DefaultDialer()
 		if len(dialers) > 0 && dialers[0] != nil {
 			base = dialers[0]
@@ -284,6 +297,17 @@ func (c *Client) SetTarget(target string) {
 }
 
 // WithCircuitBreaker 为客户端启用熔断器，使用指定的名称和配置。
+//
+// 拒绝语义（#235）：熔断路径的两类拒绝统一收敛——
+//   - open 态拒绝（gobreaker.ErrOpenState）；
+//   - **半开态探测名额耗尽**（gobreaker.ErrTooManyRequests：半开窗口内并发
+//     超过 MaxRequests，缺省 1，第 2 个在 beforeRequest 被拒）；
+//
+// 两者都计入 breaker_rejected_total 并返回同一哨兵 ErrCircuitOpen——半开名额
+// 耗尽语义上就是「熔断尚未放行」，修复前它以裸 "too many requests" 原样漏出：
+// errors.Is(err, ErrCircuitOpen) 恒 false（按「打开→降级/快失败」写的分支
+// 不触发，请求被当成普通上游错误走重试或兜底）、rejected 指标漏计（半开期的
+// 拒绝恰是最该计的那部分）、文案还极易被误读成上游 429。
 func WithCircuitBreaker(name string, settings gobreaker.Settings) ClientOption {
 	return func(c *Client) {
 		userOnStateChange := settings.OnStateChange
@@ -332,7 +356,12 @@ func WithCircuitBreaker(name string, settings gobreaker.Settings) ClientOption {
 					return nil, nil
 				})
 				if execErr != nil {
-					if errors.Is(execErr, gobreaker.ErrOpenState) {
+					// #235：open 态与**半开态名额耗尽**（ErrTooManyRequests）一起
+					// 收敛——后者是真实可达的熔断拒绝路径（半开窗口并发 ≥
+					// MaxRequests，缺省 1），修复前原样漏出：哨兵判定失效 +
+					// rejected 指标漏计 + 文案被误读成上游 429。
+					if errors.Is(execErr, gobreaker.ErrOpenState) ||
+						errors.Is(execErr, gobreaker.ErrTooManyRequests) {
 						if c.metrics != nil {
 							c.metrics.rm.ObserveRejected(c.service, metricsKind)
 						}
@@ -365,33 +394,55 @@ func (e *httpStatusError) Error() string {
 	return fmt.Sprintf("server error: %d", e.code)
 }
 
-// WithRetryConfig 配置请求重试策略,走 Hertz 官方 client.WithRetryConfig。
-// 参数语义:
-//   - maxAttempts:总尝试次数(>=1,含首次请求);0 = 走 Hertz 默认 1 次
-//   - initDelay:首次重试前的等待时间(指数退避基数,对应 retry.Config.Delay)
-//   - maxDelay:重试延迟上限(避免退避无界增长,retry.Delay 内部封顶)
-//   - maxJitter:随机抖动上限(避免雪崩,对应 retry.Config.MaxJitter)
+// WithRetryConfig 配置请求重试策略：次数上限交 hertz 的重试循环，
+// **退避等待由 httpx 层执行**（可被 ctx 打断，#236）。
 //
-// DelayPolicy 必须显式设置:hertz WithRetryConfig 的默认 DelayPolicy 是
-// retry.DefaultDelayPolicy(恒返回 0,参见 hertz pkg/app/client/retry/retry.go),
-// 不设置的话 initDelay/maxDelay/maxJitter 三个参数全部无效、重试零等待。
-// ekit 固定注入 CombineDelay(BackOffDelayPolicy, RandomDelayPolicy):
-// 每次重试延迟 = initDelay<<attempts + [0, maxJitter) 随机抖动,MaxDelay 封顶。
+// 参数语义与构造期校验（#236，非法值在 NewClient 显式报错、不静默放行）：
+//   - maxAttempts：总尝试次数（≥1，含首次请求）；0 = 不重试（hertz 默认 1 次）。
+//     上限 maxRetryAttempts（10）——档位指数增长，无上限的尝试次数是退避放大
+//     的直接来源，超出构造期报错；
+//   - initDelay：指数退避基数，第 attempts 次重试等待 initDelay<<attempts
+//     （首次重试 attempts=1，即 2×initDelay，与 hertz BackOffDelayPolicy 同
+//     口径）；≤0 = 关闭指数退避（与 hertz 同口径）；
+//   - maxDelay：单次重试延迟上限。**>0 封顶；0 = 显式「不封顶」**——此前
+//     godoc 写「retry.Delay 内部封顶」而 hertz 的封顶条件是 MaxDelay > 0，
+//     0 实际不封顶（文档与实现相反）；负值无意义（既非「不封顶」也非封顶），
+//     构造期报错；
+//   - maxJitter：随机抖动上限，实际等待 = 计算值 + [0, maxJitter)；≤0 = 不抖。
+//
+// 单次等待 = initDelay<<attempts + [0, maxJitter)，maxDelay>0 时封顶；
+// 指数档位**溢出饱和**为 MaxInt64 而非回绕成负值（hertz 的 `Delay << attempts`
+// 溢出后经 CombineDelay 的 uint64 转换被钳成 ≈292 年的等待，#236）。
+//
+// ⚠️ 退避可被 ctx 打断（#236）：hertz 的重试循环以裸 time.Sleep 等待、只在
+// 循环顶部查 ctx.Done——退避期间取消/超时不生效，最坏睡满当前档（
+// WithRetryConfig(8, 1s, 0, 0) 的第 7 档 64s），单请求总时长可放大到分钟级，
+// 与 WithTimeout/WithStream「总时长预算由调用方经 ctx 控制」的承诺冲突。
+// 现在等待走 select{timer, ctx.Done()}：取消立即返回，请求以 ctx.Err() 收尾，
+// maxDelay=0 的「不封顶」也因此有 ctx 预算兜底。等待期间 hertz 侧
+// retry.Config 的 DelayPolicy 恒 0（只传次数上限），不会重复等待。
 //
 // ⚠️ 重试触发条件(与 Hertz 默认不同,带幂等方法门 #85):
 //
 //	Hertz 官方 DefaultRetryIf 仅在幂等方法 + 网络错误时重试,不重试 5xx。
-//	ekit WithRetryConfig 默认重试「幂等方法」上的 5xx + network error——
-//	比 Hertz 宽(补 5xx),比旧版「不看方法一律重试」严;幂等门只按方法判定,
-//	无 body 的 POST 同样判非幂等(#129:副作用在方法+路径上,不在 payload 里)。
-//	旧版默认对 POST 等**非幂等请求**的 5xx 无条件重放,网关恰好超时但
-//	后端已实际写入时会重复下单/重复创建——「保持兼容」不等于「安全默认」。
-//	需要放开旧语义(任何方法都重试)时,经 WithRetryIfFunc 显式声明。
+//	ekit WithRetryConfig 默认重试「幂等方法」上的 429 + 5xx + network error
+//	(#234 补 429:限流此前永不重试),比 Hertz 宽,比旧版「不看方法一律重试」
+//	严;幂等门只按方法判定,无 body 的 POST 同样判非幂等(#129:副作用在方法+
+//	路径上,不在 payload 里)。旧版默认对 POST 等**非幂等请求**的 5xx 无条件
+//	重放,网关恰好超时但后端已实际写入时会重复下单/重复创建——「保持兼容」
+//	不等于「安全默认」。需要放开旧语义(任何方法都重试)时,经 WithRetryIfFunc
+//	显式声明。
+//
+// ⚠️ Retry-After 优先(#234):重试等待先读本次响应的 Retry-After(delay-seconds
+// 与 HTTP-date 双形态,解析复用 concurrency/retry/httpx.ParseRetryAfter 单源),
+// 有建议即**覆盖**上面的计算退避(含抖动)、maxDelay>0 时仍封顶;没有建议才回落
+// 指数退避。429/503 配 Retry-After 是限流的标准形态——修复前服务端的
+// `Retry-After: 60` 被完全无视,`WithRetryConfig(3, 100ms, 1s, …)` 会在
+// ~300ms 内把三个请求打回去,恰好落在限流窗口里。
 //
 // 官方依据:https://www.cloudwego.io/zh/docs/hertz/tutorials/basic-feature/client/
-// (Client 配置表 WithRetryConfig 示例明确列出 retry.WithDelayPolicy;
-// 退避/抖动语义见 hertz pkg/app/client/retry 包:BackOffDelayPolicy = Delay<<attempts,
-// RandomDelayPolicy = fastrand.Int63n(MaxJitter),CombineDelay 求和)
+// (尝试次数与重试循环在 hertz pkg/protocol/http1/client.go 的 HostClient.Do;
+// 本层接管的退避语义见 retry_backoff.go)
 //
 // 用法:
 //
@@ -400,17 +451,31 @@ func (e *httpStatusError) Error() string {
 //	)
 func WithRetryConfig(maxAttempts uint, initDelay, maxDelay, maxJitter time.Duration) ClientOption {
 	return func(c *Client) {
+		// 构造期校验（#236）：ClientOption 无法返回错误，先落 constructErr，
+		// NewClient 汇总显式返回（与 #83/#169 同口径）。
+		if maxAttempts > maxRetryAttempts {
+			c.setConstructErr(pkgerrors.Newf(
+				"httpx: WithRetryConfig: maxAttempts=%d 超出上限 %d——退避档位按 initDelay<<attempts 指数增长，无上限的尝试次数会把单请求退避推到分钟级乃至溢出（需要更长总窗口请调大 initDelay/maxDelay 或显式拆分重试预算）",
+				maxAttempts, maxRetryAttempts))
+			return
+		}
+		if maxDelay < 0 {
+			c.setConstructErr(pkgerrors.Newf(
+				"httpx: WithRetryConfig: maxDelay=%s 不能为负——负值既不是「封顶」也不是文档化的「0 = 不封顶」，只会被静默当成不封顶放行；需要封顶请传正值，明确不封顶请传 0",
+				maxDelay))
+			return
+		}
+		c.retryPolicy = &retryPolicy{
+			maxAttempts: maxAttempts,
+			initDelay:   initDelay,
+			maxDelay:    maxDelay,
+			maxJitter:   maxJitter,
+		}
+		// hertz 侧只保留尝试次数上限：退避等待已搬到 httpx 层（waitRetry，
+		// 可中断），不再传 InitDelay/MaxDelay/MaxJitter/DelayPolicy——传了也
+		// 因 DelayPolicy 恒 0 而全部失效，是误导性的死配置。
 		c.hzOpts = append(c.hzOpts, client.WithRetryConfig(
 			hertzretry.WithMaxAttemptTimes(maxAttempts),
-			hertzretry.WithInitDelay(initDelay),
-			hertzretry.WithMaxDelay(maxDelay),
-			hertzretry.WithMaxJitter(maxJitter),
-			// 不传 DelayPolicy 时 hertz 默认 DefaultDelayPolicy 恒为 0,
-			// 上面三个延迟参数会全部失效(2026-09-05 复审发现并修复)。
-			hertzretry.WithDelayPolicy(hertzretry.CombineDelay(
-				hertzretry.BackOffDelayPolicy,
-				hertzretry.RandomDelayPolicy,
-			)),
 		))
 		// 默认重试条件：幂等方法门 + (5xx | network error)（#85）。
 		// RetryIfFunc 必须在 client.NewClient 之后通过 SetRetryIfFunc 设置,
@@ -427,9 +492,21 @@ func WithRetryConfig(maxAttempts uint, initDelay, maxDelay, maxJitter time.Durat
 	}
 }
 
-// defaultRetryIf 是 WithRetryConfig 注入的默认重试条件（#85，#129 收口）：
+// defaultRetryIf 是 WithRetryConfig 注入的默认重试条件（#85，#129 收口，
+// #234 补 429）：
 //
-//	幂等方法 && (network error | 5xx)
+//	幂等方法 && (network error（非 ctx 取消）| 429 | 5xx)
+//
+// 状态码面复用矩阵单源 concurrency/retry/httpx.Retryable（429 + 5xx）：修复前
+// 只判 >= 500，**429 永不重试**——限流响应被原样交给调用方，而服务端的意图
+// 是按 Retry-After 退避后重试（429 配 Retry-After 是限流的标准形态）。408 不在
+// 缺省集合（Retryable 的口径）；403 + Retry-After/X-RateLimit-Remaining 这类
+// 平台化限流形态（GitHub 次级限流等）经 WithRetryIfFunc 接
+// RetryableWithHeaders，缺省不放开（403 大多是权限拒绝，盲目重试永远失败）。
+//
+// 传输层错误面复用 IsTransportRetryable：ctx 取消/超时不重试——那是调用方在
+// 收手，重试只会白跑一档退避（修复前一律重试，靠循环顶部的 ctx 检查兜底）；
+// 其余网络错误照旧重试。
 //
 // 幂等门只按方法判定（#129：无 body 的 POST 同样判非幂等——副作用在方法+路径
 // 上，不在 payload 里），对 network error 同样生效——POST 超时时后端可能已
@@ -440,9 +517,9 @@ func defaultRetryIf(req *protocol.Request, resp *protocol.Response, err error) b
 		return false
 	}
 	if err != nil {
-		return true
+		return retryhttpx.IsTransportRetryable(err)
 	}
-	return resp != nil && resp.StatusCode() >= 500
+	return resp != nil && retryhttpx.Retryable(resp.StatusCode())
 }
 
 // idempotentForRetry 判定请求对默认重试是否安全：只按**方法**判定——幂等
@@ -466,9 +543,9 @@ func idempotentForRetry(req *protocol.Request) bool {
 	return false
 }
 
-// WithRetryIfFunc 覆盖 ekit 默认重试触发条件(幂等方法门 + 5xx +
-// network error),由用户传自定义 predicate(更严格:只对特定方法/状态码;
-// 更宽松:放开非幂等请求的重放)。
+// WithRetryIfFunc 覆盖 ekit 默认重试触发条件(幂等方法门 + 429 + 5xx +
+// network error,#234 起 429 属缺省可重试),由用户传自定义 predicate(更严格:
+// 只对特定方法/状态码;更宽松:放开非幂等请求的重放)。
 // 不调 WithRetryIfFunc 时,WithRetryConfig 注入默认条件。
 //
 // **显式谓词永远赢，与 option 顺序无关**（#41）：即便本 option 写在
@@ -547,8 +624,21 @@ func (c *Client) setDynamicResolver(resolver ServiceResolver) {
 }
 
 // WithRefreshInterval 设置 endpoint 刷新间隔。
+//
+// d 必须为正（#276）：0/负值在构造期经 setConstructErr 拒绝（NewClient 返回
+// error）。修复前不校验，同一非法值的效果取决于 option 顺序——排在
+// WithServiceResolver/WithNNS 之后时用 newEndpointManager(old.resolver, d)
+// 替换 manager，而 NewEndpointManager 仅在 refreshInterval>0 时启动刷新循环，
+// 动态发现彻底停摆（连首次刷新都不发生）；排在解析器之前时又回落 30s 缺省，
+// 同一配置两种行为。拒绝非法值后两种顺序等价：正值经
+// pendingRefreshInterval 透传到 setDynamicResolver 的 manager 装配。
 func WithRefreshInterval(d time.Duration) ClientOption {
 	return func(c *Client) {
+		if d <= 0 {
+			c.setConstructErr(pkgerrors.Newf(
+				"httpx: WithRefreshInterval(%s): 刷新间隔必须为正——0/负值会让动态发现停摆（刷新循环仅在 refreshInterval>0 时启动），且效果随 option 顺序漂移；如需关闭刷新请勿配置本选项", d))
+			return
+		}
 		c.pendingRefreshInterval = d
 		if c.endpointManager == nil {
 			return

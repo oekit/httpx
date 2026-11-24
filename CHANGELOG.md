@@ -1,3 +1,43 @@
+## [v0.14.1] — 2026-11-23
+
+- build: 依赖地板对齐（矩阵地板波次）——新地板：github.com/oekit/pkg v0.60.0 。零行为变化；已发布产物的 go.mod 地板此前滞后于矩阵登记版本，本版把新地板焊进已发布产物。
+
+## [v0.14.0] — 2026-11-21
+
+- 第三轮设计/缺陷审计（2026-11-21）httpx 修复：
+
+- fix: WithDialFunc 与 WithSafeDial 冲突经构造期错误拒绝（两顺序都拒绝）——SSRF 防护不再被静默顶掉（#276）
+- fix: resolveEndpoint 选点失败且无 baseURL 时返回包装 loadbalance.ErrNoAvailable（errors.Is 可判）——无实例不再被掩盖成协议错误（#276）
+- fix: WithRefreshInterval 构造期拒绝 d<=0 并消除 option 顺序依赖（#276）
+
+关联问题单：httpx#276。
+
+## [v0.13.0] — 2026-11-20
+
+- fix(resolver): SelectorNodes 权重闭包接入 sdbridge.WeightOrDefault——weight<=0 归一 DefaultInstanceWeight=10，与 kitex/hertz 消费面同单源；此前 weightedSelector 把 <=0 视为 1，混合栈同数据流量分布分叉（#266）
+⚠ 行为面：注册数据权重漏配（<=0）时本仓消费面有效权重由 1 变 10（对齐 kitex/hertz），监控流量分布的看板口径需同步
+
+## [v0.12.3] — 2026-11-18
+
+- 非 2xx 错误体截断改 stringx.FirstN rune 安全,不再腰斩 UTF-8(#253);consistent hash FNV-1a 收敛 pkg/encoding.Fnv1a64 单源(#254);joinEndpoint/waitRetry 薄委托 pathx.JoinURL/timex.SleepContext(pkg v0.53.0 原语)
+
+关联问题单：httpx#253、httpx#254。
+
+## [v0.12.2] — 2026-11-16
+
+- refactor: fmt.Errorf → oekit/pkg/errors 三形态对位替换（#520 替换波）+ 依赖地板抬至 pkg v0.52.0。文案逐字节同形（测试断言零修改），多 %w/%w 居中/哨兵前置形态按仓规保留
+
+## [v0.12.1] — 2026-11-15
+
+- 默认重试谓词接矩阵单源（#234）：状态码面改 concurrency/retry/httpx.Retryable（429+5xx，受幂等门），传输层错误复用 IsTransportRetryable；重试等待优先读本次响应 Retry-After（秒数/HTTP-date 单源解析），maxDelay 仍封顶
+- 半开探测名额耗尽归位 ErrCircuitOpen（#235）：gobreaker.ErrTooManyRequests 与 ErrOpenState 同收敛 ObserveRejected + ErrCircuitOpen
+- 退避可中断且可校验（#236）：waitRetry 用 select{timer,ctx.Done} 可取消（synctest 假时钟钉时序），构造期校验 maxAttempts≤10/maxDelay<0，溢出不回绕
+- 2xx 空响应体不再误报 unmarshal 错（#237）：out 非 nil 且 body 非空才反序列化，空体成功返回零值
+- 直方图桶上界对齐 30s 缺省读超时（#238）：DefBuckets+20s+30s，长尾不再全进 +Inf
+- 构造期失败 lbDone 回写回归钉（#239）：缺陷已由 #204 收口，补五入口统一骨架的回归钉子
+
+关联问题单：httpx#234、httpx#235、httpx#236、httpx#237、httpx#238、httpx#239。
+
 ## [v0.12.0] — 2026-11-13
 
 - **BREAKING**：依赖地板抬 oekit/metrics v0.4.0（其历史 int 入口 State*/StateName/ObserveBreakerState/ObserveTransition 已删）。本仓熔断 seed gauge 迁 ObserveBreakerStateTyped + CircuitStateClosed。下游若直接消费 metrics 历史入口需随地板同迁（metrics v0.4.0 版本节有迁移表）。

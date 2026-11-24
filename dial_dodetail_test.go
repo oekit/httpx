@@ -55,6 +55,49 @@ func TestWithDialFunc_UsedForConnections(t *testing.T) {
 	}
 }
 
+// TestWithDialFunc_WithSafeDial_MutuallyExclusive 回归（#276）：两者都直接
+// 装配 c.dialer，后应用者会静默顶掉先应用者——WithSafeDial(), WithDialFunc(f)
+// 让 tlsAwareDialer.fn 覆盖 guarded，拨号层 SSRF 判定整体消失且构造期无
+// 错误；反向顺序则自定义拨号被丢弃。修复后两种顺序都在构造期经
+// setConstructErr 显式报错（与 #89 同口径），错误信息点名双方。
+func TestWithDialFunc_WithSafeDial_MutuallyExclusive(t *testing.T) {
+	fn := func(string) (network.Conn, error) { return nil, errors.New("custom dial") }
+	cases := []struct {
+		name string
+		opts []ClientOption
+	}{
+		{"WithSafeDial 在前 WithDialFunc 在后（SSRF 防护会消失）", []ClientOption{WithSafeDial(), WithDialFunc(fn)}},
+		{"WithDialFunc 在前 WithSafeDial 在后（自定义拨号会消失）", []ClientOption{WithDialFunc(fn), WithSafeDial()}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := NewClient("svc-dial-conflict", tc.opts...)
+			if err == nil {
+				c.Close()
+				t.Fatal("期望构造期报错（WithDialFunc 与 WithSafeDial 互斥），got nil")
+			}
+			if c != nil {
+				t.Errorf("期望错误路径返回 nil client，got %v", c)
+			}
+			for _, want := range []string{"互斥", "WithDialFunc", "WithSafeDial"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("错误信息应包含 %q 以指明冲突双方，got %q", want, err.Error())
+				}
+			}
+		})
+	}
+}
+
+// TestWithDialFunc_WithSafeDial_SameOptionRepeatable：同一选项重复应用不属
+// 冲突（最后一次为准），不得误报构造期错误。
+func TestWithDialFunc_WithSafeDial_SameOptionRepeatable(t *testing.T) {
+	c := MustNewClient("svc-dial-repeat", WithSafeDial(), WithSafeDial())
+	defer c.Close()
+	if _, ok := c.dialer.(*tlsAwareDialer); !ok {
+		t.Fatalf("expected *tlsAwareDialer, got %T", c.dialer)
+	}
+}
+
 // TestWithHertzOption_EscapeHatch 验证 WithHertzOption 逐条追加到 c.hzOpts。
 func TestWithHertzOption_EscapeHatch(t *testing.T) {
 	opts := []config.ClientOption{
@@ -106,7 +149,7 @@ func TestDoDetail_ErrorStillReturnsStatusAndBody(t *testing.T) {
 		t.Errorf("expected raw body on error, got %s", body)
 	}
 	var svcErr *ServiceError
-	if !errAs(err, &svcErr) {
+	if !errors.As(err, &svcErr) {
 		t.Fatalf("expected *ServiceError, got %T: %v", err, err)
 	}
 	if svcErr.Code != http.StatusBadRequest {

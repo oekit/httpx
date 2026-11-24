@@ -3,6 +3,7 @@ package httpx
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -76,7 +77,7 @@ func TestGetJSON_4xxError(t *testing.T) {
 		t.Fatal("expected error for 404, got nil")
 	}
 	var svcErr *ServiceError
-	if !errAs(err, &svcErr) {
+	if !errors.As(err, &svcErr) {
 		t.Fatalf("expected *ServiceError, got %T: %v", err, err)
 	}
 	if svcErr.Code != 404 {
@@ -94,7 +95,7 @@ func TestGetJSON_5xxError(t *testing.T) {
 		t.Fatal("expected error for 500, got nil")
 	}
 	var svcErr *ServiceError
-	if !errAs(err, &svcErr) {
+	if !errors.As(err, &svcErr) {
 		t.Fatalf("expected *ServiceError, got %T", err)
 	}
 	if svcErr.Code != 500 {
@@ -157,7 +158,7 @@ func TestPostJSON_5xxError(t *testing.T) {
 		t.Fatal("expected error, got nil")
 	}
 	var svcErr *ServiceError
-	if !errAs(err, &svcErr) {
+	if !errors.As(err, &svcErr) {
 		t.Fatalf("expected *ServiceError, got %T", err)
 	}
 	if svcErr.Code != 503 {
@@ -304,9 +305,9 @@ func TestRetry_OnServerError(t *testing.T) {
 	}
 }
 
-// TestRetry_DelayPolicyActive 钉住退避策略真实生效:hertz WithRetryConfig 默认
-// DelayPolicy 恒返回 0,ekit 必须显式注入 CombineDelay(BackOff, Random),
-// 否则 initDelay/maxJitter 参数全部无效、重试零等待(2026-09-05 修复的回归)。
+// TestRetry_DelayPolicyActive 钉住退避真实生效:WithRetryConfig 的
+// initDelay/maxJitter 必须换算成实际等待,否则重试零退避、参数全部无效
+// (2026-09-05 修复的回归;#236 起退避由 httpx 层 waitRetry 执行,断言不变)。
 func TestRetry_DelayPolicyActive(t *testing.T) {
 	var count atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -314,8 +315,8 @@ func TestRetry_DelayPolicyActive(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	t.Cleanup(srv.Close)
-	// 1 次重试,退避基数 80ms → BackOffDelayPolicy 至少 80ms
-	// (attempts 从 0 或 1 起,延迟 80ms 或 160ms;Random 抖动 [0,5ms))
+	// 1 次重试,退避基数 80ms → 首档 2×initDelay = 160ms(≥60ms 即证退避非零;
+	// 抖动 [0,5ms) 叠加在计算值上)
 	c := MustNewClient("test", WithBaseURL(srv.URL), WithRetryConfig(2, 80*time.Millisecond, 500*time.Millisecond, 5*time.Millisecond))
 	defer c.Close()
 	start := time.Now()
@@ -325,7 +326,7 @@ func TestRetry_DelayPolicyActive(t *testing.T) {
 		t.Errorf("expected 2 total attempts, got %d", got)
 	}
 	if elapsed < 60*time.Millisecond {
-		t.Errorf("expected >=60ms retry backoff (initDelay=80ms), got %v — DelayPolicy 没生效,重试零退避", elapsed)
+		t.Errorf("expected >=60ms retry backoff (initDelay=80ms), got %v — 退避没生效,重试零等待", elapsed)
 	}
 }
 
@@ -381,7 +382,7 @@ func TestCircuitBreaker_OpensOnConsecutiveFailures(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from open circuit, got nil")
 	}
-	if !errIs(err, ErrCircuitOpen) {
+	if !errors.Is(err, ErrCircuitOpen) {
 		t.Errorf("expected ErrCircuitOpen, got %v", err)
 	}
 	if got := count.Load(); got != hitsBefore {
@@ -458,8 +459,13 @@ func TestResolveEndpoint_PicksAndConcatenates(t *testing.T) {
 		_, _ = io.WriteString(w, `{}`)
 	}))
 	t.Cleanup(srv.Close)
-	host, port := parseHostPort(srv.URL)
-	endpoint := "http://" + host + ":" + intToStr(port)
+	// 调用点只喂 httptest server 的 "http://127.0.0.1:port" 形态（#267）：
+	// stdlib url.Parse 替代手写 parseHostPort，行为等价
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("parse httptest URL %q: %v", srv.URL, err)
+	}
+	endpoint := "http://" + u.Hostname() + ":" + u.Port()
 	c := MustNewClient("test", WithEndpoints(endpoint))
 	defer c.Close()
 	if err := c.GetJSON(context.Background(), "/api/v1/items", nil); err != nil {
@@ -558,83 +564,6 @@ func TestNNSResolver_EmptyInstances(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for empty instances, got nil")
 	}
-}
-
-func errAs(err error, target any) bool {
-	for {
-		if err == nil {
-			return false
-		}
-		switch v := target.(type) {
-		case **ServiceError:
-			if se, ok := err.(*ServiceError); ok {
-				*v = se
-				return true
-			}
-		}
-		type unwrapper interface{ Unwrap() error }
-		u, ok := err.(unwrapper)
-		if !ok {
-			return false
-		}
-		err = u.Unwrap()
-	}
-}
-
-func errIs(err, target error) bool {
-	for {
-		if err == target {
-			return true
-		}
-		if err == nil {
-			return false
-		}
-		type unwrapper interface{ Unwrap() error }
-		u, ok := err.(unwrapper)
-		if !ok {
-			return false
-		}
-		err = u.Unwrap()
-	}
-}
-
-func parseHostPort(rawURL string) (string, int) {
-	const prefix = "http://"
-	if len(rawURL) < len(prefix) || rawURL[:len(prefix)] != prefix {
-		return rawURL, 0
-	}
-	rest := rawURL[len(prefix):]
-	colon := -1
-	for i := 0; i < len(rest); i++ {
-		if rest[i] == ':' {
-			colon = i
-			break
-		}
-	}
-	if colon < 0 {
-		return rest, 0
-	}
-	port := 0
-	for i := colon + 1; i < len(rest); i++ {
-		ch := rest[i]
-		if ch < '0' || ch > '9' {
-			break
-		}
-		port = port*10 + int(ch-'0')
-	}
-	return rest[:colon], port
-}
-
-func intToStr(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	digits := ""
-	for n > 0 {
-		digits = string(rune('0'+n%10)) + digits
-		n /= 10
-	}
-	return digits
 }
 
 type stubNNSClient struct {
